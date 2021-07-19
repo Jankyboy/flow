@@ -15,10 +15,6 @@ exception Require_not_found of string
 
 exception Module_not_found of string
 
-exception Tvar_not_found of Constraint.ident
-
-type env = Scope.t list
-
 (* The Context module defines types for data which is passed around during type
  * checking, providing access to commonly needed state. The data is layered
  * according to their lifetimes and falls into three categories: *)
@@ -36,7 +32,12 @@ type component_t
 (* 3. Inter-component information, i.e., stuff that we might want to know about
  * dependencies, like what modules they export and what types correspond to what
  * resolved tvars. *)
-type sig_t
+type sig_t = Type.TypeContext.t
+
+type master_context = {
+  master_sig_cx: sig_t;
+  builtins: Builtins.t;
+}
 
 type metadata = {
   (* local *)
@@ -52,15 +53,13 @@ type metadata = {
   automatic_require_default: bool;
   babel_loose_array_spread: bool;
   max_literal_length: int;
+  check_updates_against_providers: bool;
   enable_const_params: bool;
   enable_enums: bool;
+  enable_enums_with_unknown_members: bool;
+  enable_indexed_access: bool;
   enforce_strict_call_arity: bool;
-  esproposal_class_static_fields: Options.esproposal_feature_mode;
-  esproposal_class_instance_fields: Options.esproposal_feature_mode;
-  esproposal_decorators: Options.esproposal_feature_mode;
-  esproposal_export_star_as: Options.esproposal_feature_mode;
-  esproposal_optional_chaining: Options.esproposal_feature_mode;
-  esproposal_nullish_coalescing: Options.esproposal_feature_mode;
+  enforce_local_inference_annotations: bool;
   exact_by_default: bool;
   facebook_fbs: string option;
   facebook_fbt: string option;
@@ -69,22 +68,27 @@ type metadata = {
   ignore_non_literal_requires: bool;
   max_trace_depth: int;
   react_runtime: Options.react_runtime;
+  react_server_component_exts: SSet.t;
   recursion_limit: int;
+  reorder_checking: Options.order_mode;
   root: Path.t;
+  run_post_inference_implicit_instantiation: bool;
   strict_es6_import_export: bool;
   strict_es6_import_export_excludes: string list;
   strip_root: bool;
   suppress_types: SSet.t;
   max_workers: int;
-  default_lib_dir: Path.t option;
   trust_mode: Options.trust_mode;
   type_asserts: bool;
 }
 
 type phase =
+  | InitLib
   | Checking
   | Merging
-  | Normalizing
+  | ImplicitInstantiation
+
+val string_of_phase : phase -> string
 
 type type_assert_kind =
   | Is
@@ -97,6 +101,20 @@ type voidable_check = {
   errors: ALoc.t Property_assignment.errors;
 }
 
+module Implicit_instantiation_check : sig
+  type poly_t = ALoc.t * Type.typeparam Nel.t * Type.t
+
+  type operation =
+    | Call of Type.funcalltype
+    | Constructor of Type.call_arg list
+
+  type t = {
+    lhs: Type.t;
+    poly_t: poly_t;
+    operation: Type.use_op * Reason.t * operation;
+  }
+end
+
 type computed_property_state =
   | ResolvedOnce of Reason.t
   | ResolvedMultipleTimes
@@ -105,12 +123,11 @@ type subst_cache_err =
   | ETooFewTypeArgs of ALoc.t Reason.virtual_reason * int
   | ETooManyTypeArgs of ALoc.t Reason.virtual_reason * int
 
-val make_sig : unit -> sig_t
+val empty_master_cx : unit -> master_context
 
-val make_ccx : sig_t -> ALoc.table Lazy.t Utils_js.FilenameMap.t -> component_t
+val make_ccx : master_context -> component_t
 
-val make :
-  component_t -> metadata -> File_key.t -> ALoc.reverse_table Lazy.t -> string -> phase -> t
+val make : component_t -> metadata -> File_key.t -> ALoc.table Lazy.t -> Reason.name -> phase -> t
 
 val metadata_of_options : Options.t -> metadata
 
@@ -121,8 +138,6 @@ val trust_constructor : t -> unit -> Trust.trust_rep
 val cx_with_trust : t -> (unit -> Trust.trust_rep) -> t
 
 val sig_cx : t -> sig_t
-
-val graph_sig : sig_t -> Constraint.node IMap.t
 
 val find_module_sig : sig_t -> string -> Type.t
 
@@ -137,35 +152,35 @@ val max_literal_length : t -> int
 
 val babel_loose_array_spread : t -> bool
 
+val builtins : t -> Builtins.t
+
 val enable_const_params : t -> bool
 
 val enable_enums : t -> bool
 
-val enforce_strict_call_arity : t -> bool
+val enable_enums_with_unknown_members : t -> bool
 
-val envs : t -> env IMap.t
+val enable_indexed_access : t -> bool
+
+val enforce_strict_call_arity : t -> bool
 
 val errors : t -> Flow_error.ErrorSet.t
 
 val error_suppressions : t -> Error_suppressions.t
-
-val esproposal_class_static_fields : t -> Options.esproposal_feature_mode
-
-val esproposal_class_instance_fields : t -> Options.esproposal_feature_mode
-
-val esproposal_decorators : t -> Options.esproposal_feature_mode
-
-val esproposal_export_star_as : t -> Options.esproposal_feature_mode
-
-val esproposal_optional_chaining : t -> Options.esproposal_feature_mode
-
-val esproposal_nullish_coalescing : t -> Options.esproposal_feature_mode
 
 val evaluated : t -> Type.t Type.Eval.Map.t
 
 val goals : t -> Type.t IMap.t
 
 val exact_by_default : t -> bool
+
+val enforce_local_inference_annotations : t -> bool
+
+val check_updates_against_providers : t -> bool
+
+val reorder_checking : t -> Options.order_mode
+
+val run_post_inference_implicit_instantiation : t -> bool
 
 val file : t -> File_key.t
 
@@ -183,13 +198,13 @@ val find_require : t -> ALoc.t -> Type.t
 
 val find_module : t -> string -> Type.t
 
-val find_tvar : t -> Constraint.ident -> Constraint.node
+val find_tvar : t -> Type.ident -> Type.Constraint.node
 
-val mem_nominal_prop_id : t -> Constraint.ident -> bool
+val mem_nominal_prop_id : t -> Type.ident -> bool
 
 val mem_nominal_poly_id : t -> Type.Poly.id -> bool
 
-val graph : t -> Constraint.node IMap.t
+val graph : t -> Type.Constraint.node IMap.t
 
 val trust_graph : t -> Trust_constraint.node IMap.t
 
@@ -213,11 +228,9 @@ val module_kind : t -> Module_info.kind
 
 val require_map : t -> Type.t ALocMap.t
 
-val module_map : t -> Type.t SMap.t
+val module_map : t -> Type.t NameUtils.Map.t
 
-val exported_locals : t -> ALocSet.t SMap.t option
-
-val module_ref : t -> string
+val module_ref : t -> Reason.name
 
 val property_maps : t -> Type.Properties.map
 
@@ -226,6 +239,8 @@ val call_props : t -> Type.t IMap.t
 val export_maps : t -> Type.Exports.map
 
 val react_runtime : t -> Options.react_runtime
+
+val in_react_server_component_file : t -> bool
 
 val recursion_limit : t -> int
 
@@ -246,8 +261,6 @@ val should_munge_underscores : t -> bool
 val should_strip_root : t -> bool
 
 val suppress_types : t -> SSet.t
-
-val default_lib_dir : t -> Path.t option
 
 val trust_mode : t -> Options.trust_mode
 
@@ -277,13 +290,15 @@ val exists_excuses : t -> ExistsCheck.t ALocMap.t
 
 val voidable_checks : t -> voidable_check list
 
-val use_def : t -> Scope_api.With_ALoc.info * Ssa_api.With_ALoc.values
+val implicit_instantiation_checks : t -> Implicit_instantiation_check.t list
+
+val use_def : t -> Env_builder.env_info option
 
 val pid_prefix : t -> string
 
 val copy_of_context : t -> t
 
-val merge_into : sig_t -> sig_t -> unit
+val merge_into : component_t -> sig_t -> unit
 
 val automatic_require_default : t -> bool
 
@@ -295,8 +310,6 @@ val pop_declare_module : t -> unit
 val module_info : t -> Module_info.t
 
 (* mutators *)
-val add_env : t -> int -> env -> unit
-
 val add_error : t -> ALoc.t Flow_error.t -> unit
 
 val add_error_suppression : t -> Loc.t -> Suppression_comments.applicable_codes -> unit
@@ -307,7 +320,7 @@ val add_lint_suppressions : t -> LocSet.t -> unit
 
 val add_require : t -> ALoc.t -> Type.t -> unit
 
-val add_module : t -> string -> Type.t -> unit
+val add_module : t -> Reason.name -> Type.t -> unit
 
 val add_property_map : t -> Type.Properties.id -> Type.Properties.t -> unit
 
@@ -315,7 +328,7 @@ val add_call_prop : t -> int -> Type.t -> unit
 
 val add_export_map : t -> Type.Exports.id -> Type.Exports.t -> unit
 
-val add_tvar : t -> Constraint.ident -> Constraint.node -> unit
+val add_tvar : t -> Type.ident -> Type.Constraint.node -> unit
 
 val add_trust_var : t -> Trust_constraint.ident -> Trust_constraint.node -> unit
 
@@ -327,9 +340,23 @@ val add_literal_subtypes : t -> Type.t * Type.use_t -> unit
 
 val add_voidable_check : t -> voidable_check -> unit
 
-val remove_tvar : t -> Constraint.ident -> unit
+val add_implicit_instantiation_call :
+  t ->
+  Type.t ->
+  Implicit_instantiation_check.poly_t ->
+  Type.use_op ->
+  Reason.t ->
+  Type.funcalltype ->
+  unit
 
-val set_envs : t -> env IMap.t -> unit
+val add_implicit_instantiation_ctor :
+  t ->
+  Type.t ->
+  Implicit_instantiation_check.poly_t ->
+  Type.use_op ->
+  Reason.t ->
+  Type.call_arg list ->
+  unit
 
 val set_evaluated : t -> Type.t Type.Eval.Map.t -> unit
 
@@ -339,7 +366,7 @@ val set_type_graph : t -> Graph_explorer.graph -> unit
 
 val set_all_unresolved : t -> ISet.t IMap.t -> unit
 
-val set_graph : t -> Constraint.node IMap.t -> unit
+val set_graph : t -> Type.Constraint.node IMap.t -> unit
 
 val set_trust_graph : t -> Trust_constraint.node IMap.t -> unit
 
@@ -353,13 +380,15 @@ val set_exists_checks : t -> ExistsCheck.t ALocMap.t -> unit
 
 val set_exists_excuses : t -> ExistsCheck.t ALocMap.t -> unit
 
-val set_use_def : t -> Scope_api.With_ALoc.info * Ssa_api.With_ALoc.values -> unit
+val set_use_def : t -> Env_builder.env_info -> unit
 
-val set_module_map : t -> Type.t SMap.t -> unit
+val set_module_map : t -> Type.t NameUtils.Map.t -> unit
 
-val set_local_env : t -> ALocSet.t SMap.t option -> unit
+val set_local_env : t -> ALocIDSet.t -> unit
 
-val clear_master_shared : t -> sig_t -> unit
+val is_exported_local : t -> ALoc.t -> bool
+
+val clear_master_shared : t -> master_context -> unit
 
 (* Flow allows you test test if a property exists inside a conditional. However, we only wan to
  * allow this test if there's a chance that the property might exist. So `if (foo.bar)` should be
@@ -373,22 +402,22 @@ val clear_master_shared : t -> sig_t -> unit
  * we record if testing a property ever succeeds. If if never succeeds after typechecking is done,
  * we emit an error.
  *)
-val test_prop_hit : t -> Constraint.ident -> unit
+val test_prop_hit : t -> Type.ident -> unit
 
 val test_prop_miss :
-  t -> Constraint.ident -> string option -> Reason.t * Reason.t -> Type.use_op -> unit
+  t -> Type.ident -> Reason.name option -> Reason.t * Reason.t -> Type.use_op -> unit
 
-val test_prop_get_never_hit : t -> (string option * (Reason.t * Reason.t) * Type.use_op) list
+val test_prop_get_never_hit : t -> (Reason.name option * (Reason.t * Reason.t) * Type.use_op) list
 
-val computed_property_state_for_id : t -> Constraint.ident -> computed_property_state option
+val computed_property_state_for_id : t -> Type.ident -> computed_property_state option
 
-val computed_property_add_lower_bound : t -> Constraint.ident -> Reason.t -> unit
+val computed_property_add_lower_bound : t -> Type.ident -> Reason.t -> unit
 
-val computed_property_add_multiple_lower_bounds : t -> Constraint.ident -> unit
+val computed_property_add_multiple_lower_bounds : t -> Type.ident -> unit
 
-val spread_widened_types_get_widest : t -> Constraint.ident -> Type.Object.slice option
+val spread_widened_types_get_widest : t -> Type.ident -> Type.Object.slice option
 
-val spread_widened_types_add_widest : t -> Constraint.ident -> Type.Object.slice -> unit
+val spread_widened_types_add_widest : t -> Type.ident -> Type.Object.slice -> unit
 
 val mark_optional_chain : t -> ALoc.t -> Reason.t -> useful:bool -> unit
 
@@ -399,24 +428,27 @@ val mark_invariant : t -> ALoc.t -> Reason.t -> useful:bool -> unit
 val unnecessary_invariants : t -> (ALoc.t * Reason.t) list
 
 (* utils *)
-val iter_props : t -> Type.Properties.id -> (string -> Type.Property.t -> unit) -> unit
+val iter_props : t -> Type.Properties.id -> (Reason.name -> Type.Property.t -> unit) -> unit
 
-val iter_real_props : t -> Type.Properties.id -> (string -> Type.Property.t -> unit) -> unit
+val iter_real_props : t -> Type.Properties.id -> (Reason.name -> Type.Property.t -> unit) -> unit
 
-val fold_real_props : t -> Type.Properties.id -> (string -> Type.Property.t -> 'a -> 'a) -> 'a -> 'a
+val fold_real_props :
+  t -> Type.Properties.id -> (Reason.name -> Type.Property.t -> 'a -> 'a) -> 'a -> 'a
 
-val has_prop : t -> Type.Properties.id -> string -> bool
+val has_prop : t -> Type.Properties.id -> Reason.name -> bool
 
-val get_prop : t -> Type.Properties.id -> string -> Type.Property.t option
+val get_prop : t -> Type.Properties.id -> Reason.name -> Type.Property.t option
 
-val set_prop : t -> Type.Properties.id -> string -> Type.Property.t -> unit
+val set_prop : t -> Type.Properties.id -> Reason.name -> Type.Property.t -> unit
 
-val has_export : t -> Type.Exports.id -> string -> bool
+val has_export : t -> Type.Exports.id -> Reason.name -> bool
 
-val set_export : t -> Type.Exports.id -> string -> ALoc.t option * Type.t -> unit
+val set_export : t -> Type.Exports.id -> Reason.name -> ALoc.t option * Type.t -> unit
 
 (* constructors *)
 val make_aloc_id : t -> ALoc.t -> ALoc.id
+
+val make_generic_id : t -> string -> ALoc.t -> Generic.id
 
 val generate_property_map : t -> Type.Properties.t -> Type.Properties.id
 
@@ -430,11 +462,11 @@ val generate_poly_id : t -> Type.Poly.id
 
 val make_source_poly_id : t -> ALoc.t -> Type.Poly.id
 
-val find_constraints : t -> Constraint.ident -> Constraint.ident * Constraint.constraints
+val find_constraints : t -> Type.ident -> Type.ident * Type.Constraint.constraints Lazy.t
 
-val find_graph : t -> Constraint.ident -> Constraint.constraints
+val find_graph : t -> Type.ident -> Type.Constraint.constraints Lazy.t
 
-val find_root : t -> Constraint.ident -> Constraint.ident * Constraint.root
+val find_root : t -> Type.ident -> Type.ident * Type.Constraint.root
 
 val find_resolved : t -> Type.t -> Type.t option
 
@@ -444,10 +476,6 @@ val find_trust_constraints :
 val find_trust_graph : t -> Trust_constraint.ident -> Trust_constraint.constraints
 
 val find_trust_root : t -> Trust_constraint.ident -> Trust_constraint.ident * Trust_constraint.root
-
-val with_normalizer_mode : t -> (t -> 'a) -> 'a
-
-val in_normalizer_mode : t -> bool
 
 val constraint_cache : t -> Type.FlowSet.t ref
 
@@ -462,8 +490,14 @@ val eval_id_cache :
 
 val eval_repos_cache : t -> (Type.t * Type.defer_use_t * Type.Eval.id, Type.t) Hashtbl.t
 
-val fix_cache : t -> (Reason.t * Type.t, Type.t) Hashtbl.t
+val fix_cache : t -> (bool * Type.t, Type.t) Hashtbl.t
 
 val spread_cache : t -> Spread_cache.t
 
 val speculation_state : t -> Speculation_state.t
+
+val speculation_id : t -> (int * int) option
+
+val exists_instantiations : t -> Type.t list ALocIDMap.t
+
+val add_exists_instantiation : t -> ALoc.t -> Type.t -> unit

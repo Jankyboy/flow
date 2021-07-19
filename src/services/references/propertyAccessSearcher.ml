@@ -31,9 +31,9 @@ class property_access_searcher name =
       end;
       super#object_key key
 
-    method! pattern_object_property ?kind (prop : (Loc.t, Loc.t) Ast.Pattern.Object.Property.t') =
+    method! pattern_object_property ?kind (prop : (Loc.t, Loc.t) Ast.Pattern.Object.Property.t) =
       let open Ast.Pattern.Object.Property in
-      let { key; _ } = prop in
+      let (_loc, { key; _ }) = prop in
       begin
         match key with
         | Identifier (_, { Ast.Identifier.name = id; comments = _ }) when id = name ->
@@ -71,7 +71,7 @@ class property_access_searcher name =
           if exported_name = name then this#set_acc true
         | Some (_, VariableDeclaration { VariableDeclaration.declarations = decls; _ }) ->
           Flow_ast_utils.fold_bindings_of_variable_declarations
-            (fun () (_, { Ast.Identifier.name = exported_name; comments = _ }) ->
+            (fun () (_, { Ast.Identifier.name = exported_name; comments = _ }) _ ->
               if exported_name = name then this#set_acc true)
             ()
             decls

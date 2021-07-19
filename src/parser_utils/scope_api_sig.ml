@@ -47,7 +47,12 @@ module type S = sig
   }
   [@@deriving show]
 
+  val debug_info : info -> string
+
   val scope : info -> scope -> Scope.t
+
+  (* `scope_within info scope_id scope` returns whether `scope` is nested within `scope_id`. *)
+  val scope_within : info -> scope -> Scope.t -> bool
 
   (* List of scopes associated with a loc. The returned list order should be
      based on the scope depth (some nodes such as functions have two scopes

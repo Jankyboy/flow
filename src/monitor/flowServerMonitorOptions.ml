@@ -12,6 +12,7 @@ type watchman_options = {
   debug: bool;  (** Turn on debugging messages for the file watcher *)
   defer_states: string list;  (** Defer watchman notifications while these states are asserted *)
   mergebase_with: string;  (** symbolic commit to find changes against *)
+  survive_restarts: bool;  (** try to recover from watchman restarting *)
   sync_timeout: int option;
       (** How long to wait for the file watcher to synchronize, in milliseconds *)
 }
@@ -34,7 +35,7 @@ type t = {
   (* The server's options *)
   server_options: Options.t;
   (* The shared memory config *)
-  shared_mem_config: SharedMem_js.config;
+  shared_mem_config: SharedMem.config;
   (* The argv of the process which created the server monitor *)
   argv: string array;
   (* What to use for file watching *)

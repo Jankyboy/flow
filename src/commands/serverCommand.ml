@@ -21,6 +21,7 @@ let spec =
         |> base_flags
         |> lazy_flags
         |> options_flags
+        |> saved_state_flags
         |> shm_flags
         |> ignore_version_flag
         |> from_flag
@@ -39,6 +40,7 @@ let main
     base_flags
     lazy_mode
     options_flags
+    saved_state_options_flags
     shm_flags
     ignore_version
     server_log_file
@@ -53,11 +55,20 @@ let main
     () =
   let flowconfig_name = base_flags.Base_flags.flowconfig_name in
   let root = CommandUtils.guess_root flowconfig_name path_opt in
-  let flowconfig =
+  let (flowconfig, flowconfig_hash) =
     let flowconfig_path = Server_files_js.config_file flowconfig_name root in
-    read_config_or_exit ~enforce_warnings:(not ignore_version) flowconfig_path
+    read_config_and_hash_or_exit ~enforce_warnings:(not ignore_version) flowconfig_path
   in
-  let options = make_options ~flowconfig_name ~flowconfig ~lazy_mode ~root options_flags in
+  let options =
+    make_options
+      ~flowconfig_name
+      ~flowconfig_hash
+      ~flowconfig
+      ~lazy_mode
+      ~root
+      ~options_flags
+      ~saved_state_options_flags
+  in
   (* initialize loggers before doing too much, especially anything that might exit *)
   LoggingUtils.init_loggers ~options ();
 

@@ -36,6 +36,8 @@ type t =
   | Lock_stolen
   (* Specific error for not being able to find a .flowconfig *)
   | Could_not_find_flowconfig
+  (* Failed to extract flowlibs into temp dir *)
+  | Could_not_extract_flowlibs
   (* Generic out-of-date error. This could be a version thing or maybe
    * something changed and Flow can't handle it incrementally yet *)
   | Server_out_of_date
@@ -66,14 +68,18 @@ type t =
   | Socket_error
   (* The hack code might throw this *)
   | Dfind_died
-  (* The hack code might throw this *)
-  | Dfind_unresponsive
   (* A fatal error with Watchman *)
   | Watchman_error
+  (* A fatal error with Watchman (TODO: dedupe with Watchman_error) *)
+  | Watchman_failed
+  (* Watchman restarted *)
+  | File_watcher_missed_changes
   (* Shared memory hash table is full *)
   | Hash_table_full
   (* Shared memory heap is full *)
   | Heap_full
+  (* EventLogger daemon ran out of restarts *)
+  | EventLogger_restart_out_of_retries
   (* A generic something-else-went-wrong *)
   | Unknown_error
 
@@ -113,16 +119,19 @@ let error_code = function
   | Killed_by_monitor -> 19
   | Invalid_saved_state -> 20
   | Restart -> 21
+  | Could_not_extract_flowlibs -> 22
   | Commandline_usage_error -> 64
   | No_input -> 66
   | Server_start_failed _ -> 78
   | Missing_flowlib -> 97
   | Socket_error -> 98
   | Dfind_died -> 99
-  | Dfind_unresponsive -> 100
   | Watchman_error -> 101
   | Hash_table_full -> 102
   | Heap_full -> 103
+  | Watchman_failed -> 104
+  | File_watcher_missed_changes -> 105
+  | EventLogger_restart_out_of_retries -> 108
   | Unknown_error -> 110
 
 (* Return an error type given an error code *)
@@ -150,6 +159,7 @@ let error_type = function
   | 19 -> Killed_by_monitor
   | 20 -> Invalid_saved_state
   | 21 -> Restart
+  | 22 -> Could_not_extract_flowlibs
   | 64 -> Commandline_usage_error
   | 66 -> No_input
   (* The process status is made up *)
@@ -157,14 +167,18 @@ let error_type = function
   | 97 -> Missing_flowlib
   | 98 -> Socket_error
   | 99 -> Dfind_died
-  | 100 -> Dfind_unresponsive
   | 101 -> Watchman_error
   | 102 -> Hash_table_full
   | 103 -> Heap_full
+  | 104 -> Watchman_failed
+  | 105 -> File_watcher_missed_changes
+  | 108 -> EventLogger_restart_out_of_retries
   | 110 -> Unknown_error
   | _ -> raise Not_found
 
-let error_type_opt i = (try Some (error_type i) with Not_found -> None)
+let error_type_opt i =
+  try Some (error_type i) with
+  | Not_found -> None
 
 let unpack_process_status = function
   | Unix.WEXITED n -> ("exit", n)
@@ -176,6 +190,7 @@ let to_string = function
   | No_error -> "Ok"
   | Input_error -> "Input_error"
   | Could_not_find_flowconfig -> "Could_not_find_flowconfig"
+  | Could_not_extract_flowlibs -> "Could_not_extract_flowlibs"
   | Server_out_of_date -> "Server_out_of_date"
   | Server_client_directory_mismatch -> "Server_client_directory_mismatch"
   | Out_of_shared_memory -> "Out_of_shared_memory"
@@ -189,15 +204,16 @@ let to_string = function
   | Windows_killed_by_task_manager -> "Windows_killed_by_task_manager"
   | Server_start_failed status ->
     let (reason, code) = unpack_process_status status in
-    Utils_js.spf "Server_start_failed (%s, %d)" reason code
+    Printf.sprintf "Server_start_failed (%s, %d)" reason code
   | Type_error -> "Type_error"
   | Build_id_mismatch -> "Build_id_mismatch"
   | Lock_stolen -> "Lock_stolen"
   | Socket_error -> "Socket_error"
   | Missing_flowlib -> "Missing_flowlib"
   | Dfind_died -> "Dfind_died"
-  | Dfind_unresponsive -> "Dfind_unresponsive"
   | Watchman_error -> "Watchman_error"
+  | Watchman_failed -> "Watchman_failed"
+  | File_watcher_missed_changes -> "File_watcher_missed_changes"
   | Unknown_error -> "Unknown_error"
   | Commandline_usage_error -> "Commandline_usage_error"
   | No_input -> "No_input"
@@ -208,16 +224,9 @@ let to_string = function
   | Restart -> "Restart"
   | Hash_table_full -> "Hash_table_full"
   | Heap_full -> "Heap_full"
+  | EventLogger_restart_out_of_retries -> "EventLogger_restart_out_of_retries"
 
 exception Exit_with of t
-
-type json_mode = { pretty: bool }
-
-let json_mode = ref None
-
-let set_json_mode ~pretty = json_mode := Some { pretty }
-
-let unset_json_mode () = json_mode := None
 
 let json_props_of_t ?msg t =
   Hh_json.(
@@ -226,26 +235,3 @@ let json_props_of_t ?msg t =
       @ Base.Option.value_map msg ~default:[] ~f:(fun msg -> [("msg", JSON_String msg)])
     in
     [("flowVersion", JSON_String Flow_version.version); ("exit", JSON_Object exit_props)])
-
-let print_json ?msg t =
-  match t with
-  (* Commands that exit with these exit codes handle json output themselves *)
-  | No_error
-  | Type_error ->
-    ()
-  | _ ->
-    begin
-      match !json_mode with
-      | None -> ()
-      | Some { pretty } ->
-        let json = Hh_json.JSON_Object (json_props_of_t ?msg t) in
-        Hh_json.print_json_endline ~pretty json
-    end
-
-let exit ?msg t =
-  (match msg with
-  | Some msg -> prerr_endline msg
-  | None -> ());
-  print_json ?msg t;
-  if FlowEventLogger.should_log () then FlowEventLogger.exit msg (to_string t);
-  Stdlib.exit (error_code t)

@@ -106,41 +106,45 @@ class useless_mapper =
 
     method! jsx_element _loc (elem : (Loc.t, Loc.t) Ast.JSX.element) =
       let open Ast.JSX in
-      let { openingElement = (_, open_elem) as openingElement; closingElement; children; comments }
-          =
+      let {
+        opening_element = (_, open_elem) as opening_element;
+        closing_element;
+        children;
+        comments;
+      } =
         elem
       in
-      let openingElement' = this#jsx_opening_element openingElement in
-      let closingElement' =
-        let (loc, open_elem') = openingElement' in
-        if open_elem'.Opening.selfClosing then
+      let opening_element' = this#jsx_opening_element opening_element in
+      let closing_element' =
+        let (loc, open_elem') = opening_element' in
+        if open_elem'.Opening.self_closing then
           None
-        (* if selfClosing changed from true to false, construct a closing element *)
-        else if open_elem.Opening.selfClosing then
+        (* if self_closing changed from true to false, construct a closing element *)
+        else if open_elem.Opening.self_closing then
           Some (loc, { Closing.name = open_elem'.Opening.name })
         else
-          Flow_ast_mapper.map_opt super#jsx_closing_element closingElement
+          Flow_ast_mapper.map_opt super#jsx_closing_element closing_element
       in
       let children' = this#jsx_children children in
       if
-        openingElement == openingElement'
-        && closingElement == closingElement'
+        opening_element == opening_element'
+        && closing_element == closing_element'
         && children == children'
       then
         elem
       else
         {
-          openingElement = openingElement';
-          closingElement = closingElement';
+          opening_element = opening_element';
+          closing_element = closing_element';
           children = children';
           comments;
         }
 
     method! jsx_opening_element (elem : (Loc.t, Loc.t) Ast.JSX.Opening.t) =
       let open Ast.JSX.Opening in
-      let (loc, { name; selfClosing; attributes }) = elem in
-      let name' = this#jsx_name name in
-      let selfClosing' =
+      let (loc, { name; self_closing; attributes }) = elem in
+      let name' = this#jsx_element_name name in
+      let self_closing' =
         match name' with
         | Ast.JSX.Identifier (_, { Ast.JSX.Identifier.name = id_name; comments = _ }) ->
           if id_name = "selfClosing" then
@@ -148,14 +152,14 @@ class useless_mapper =
           else if id_name = "notSelfClosing" then
             false
           else
-            selfClosing
-        | _ -> selfClosing
+            self_closing
+        | _ -> self_closing
       in
       let attributes' = ListUtils.ident_map super#jsx_opening_attribute attributes in
-      if name == name' && selfClosing == selfClosing' && attributes == attributes' then
+      if name == name' && self_closing == self_closing' && attributes == attributes' then
         elem
       else
-        (loc, { name = name'; selfClosing = selfClosing'; attributes = attributes' })
+        (loc, { name = name'; self_closing = self_closing'; attributes = attributes' })
 
     method! jsx_identifier (id : (Loc.t, Loc.t) Ast.JSX.Identifier.t) =
       let open Ast.JSX.Identifier in
@@ -191,10 +195,10 @@ class useless_mapper =
           child
       | _ -> super#jsx_child child
 
-    method! variance (variance : Loc.t Ast.Variance.t option) =
+    method! variance (variance : Loc.t Ast.Variance.t) =
       let open Ast.Variance in
       match variance with
-      | Some (loc, { kind = Minus; comments }) -> Some (loc, { kind = Plus; comments })
+      | (loc, { kind = Minus; comments }) -> (loc, { kind = Plus; comments })
       | _ -> variance
 
     method! call_type_args (loc, targs) =
@@ -231,11 +235,58 @@ class useless_mapper =
       let ((loc, opt') as opt) = super#object_property_type opt in
       let { key; variance; _ } = opt' in
       let key' = this#object_key key in
-      let variance' = this#variance variance in
+      let variance' = this#variance_opt variance in
       if key' == key && variance' == variance then
         opt
       else
         (loc, { opt' with key = key'; variance = variance' })
+
+    method! enum_defaulted_member (member : Loc.t Ast.Statement.EnumDeclaration.DefaultedMember.t) =
+      let open Ast.Statement.EnumDeclaration.DefaultedMember in
+      let (loc, { id }) = member in
+      match id with
+      | (loc', { Ast.Identifier.name = "On"; comments }) ->
+        (loc, { id = (loc', Ast.Identifier.{ name = "Enabled"; comments }) })
+      | _ -> member
+
+    method! enum_string_member
+        (member :
+          (Loc.t Ast.StringLiteral.t, Loc.t) Ast.Statement.EnumDeclaration.InitializedMember.t) =
+      let open Ast.Statement.EnumDeclaration.InitializedMember in
+      let (loc, { id; init }) = member in
+      match init with
+      | (loc', Ast.StringLiteral.{ value; raw = _; comments }) when String.equal "on" value ->
+        ( loc,
+          {
+            id;
+            init = (loc', Ast.StringLiteral.{ value = "'enabled'"; raw = "'enabled'"; comments });
+          } )
+      | _ -> member
+
+    method! enum_number_member
+        (member :
+          (Loc.t Ast.NumberLiteral.t, Loc.t) Ast.Statement.EnumDeclaration.InitializedMember.t) =
+      let open Ast.Statement.EnumDeclaration.InitializedMember in
+      let (loc, { id; init }) = member in
+      match init with
+      | (loc', Ast.NumberLiteral.{ value = 1.0; raw; comments = None }) ->
+        ( loc,
+          {
+            id;
+            init =
+              ( loc',
+                Ast_builder.number_literal
+                  ~comments:
+                    Ast.Syntax.
+                      {
+                        leading = [];
+                        trailing = [Ast_builder.Comments.line " a comment"];
+                        internal = ();
+                      }
+                  1.0
+                  raw );
+          } )
+      | _ -> member
   end
 
 class literal_mapper =
@@ -261,14 +312,14 @@ class insert_variance_mapper =
       let open Ast.Type.TypeParam in
       let ((loc, tparam') as orig) = super#type_param tparam in
       let { variance; _ } = tparam' in
-      let variance' = this#variance_ loc variance in
+      let variance' = this#variance_opt_ loc variance in
       if variance == variance' then
         orig
       else
         (loc, { tparam' with variance = variance' })
 
     (* New variance method with a different type signature that allows us to insert a loc *)
-    method variance_ (loc : Loc.t) (variance : Loc.t Ast.Variance.t option) =
+    method variance_opt_ (loc : Loc.t) (variance : Loc.t Ast.Variance.t option) =
       let open Ast.Variance in
       match variance with
       | None -> Some (loc, { kind = Plus; comments = None })
@@ -279,7 +330,7 @@ class delete_variance_mapper =
   object
     inherit [Loc.t] Flow_ast_mapper.mapper
 
-    method! variance (variance : Loc.t Ast.Variance.t option) =
+    method! variance_opt (variance : Loc.t Ast.Variance.t option) =
       let open Ast.Variance in
       match variance with
       | Some (_loc, { kind = Minus; comments = _ }) -> None
@@ -320,7 +371,7 @@ class first_last_dup_mapper =
   object
     inherit [Loc.t] Flow_ast_mapper.mapper
 
-    method! statement_list stmts = (List.hd stmts :: stmts) @ [List.hd (List.rev stmts)]
+    method! statement_list stmts = List.hd stmts :: stmts @ [List.hd (List.rev stmts)]
   end
 
 class insert_import_mapper =
@@ -330,15 +381,14 @@ class insert_import_mapper =
     method! statement_list stmts =
       if List.length stmts > 0 then
         let open Ast.Statement.ImportDeclaration in
-        let open Ast.StringLiteral in
         let stmts = super#statement_list stmts in
         let (loc, _) = List.hd stmts in
         let imp =
           ( loc,
             Ast.Statement.ImportDeclaration
               {
-                importKind = Ast.Statement.ImportDeclaration.ImportValue;
-                source = (loc, { value = "baz"; raw = "\"baz\""; comments = None });
+                import_kind = Ast.Statement.ImportDeclaration.ImportValue;
+                source = (loc, { Ast.StringLiteral.value = "baz"; raw = "\"baz\""; comments = None });
                 default = None;
                 specifiers =
                   Some
@@ -365,15 +415,14 @@ class insert_second_import_mapper =
     method! statement_list stmts =
       if List.length stmts > 0 then
         let open Ast.Statement.ImportDeclaration in
-        let open Ast.StringLiteral in
         let stmts = super#statement_list stmts in
         let (loc, _) = List.hd stmts in
         let imp =
           ( loc,
             Ast.Statement.ImportDeclaration
               {
-                importKind = Ast.Statement.ImportDeclaration.ImportValue;
-                source = (loc, { value = "baz"; raw = "\"baz\""; comments = None });
+                import_kind = Ast.Statement.ImportDeclaration.ImportValue;
+                source = (loc, { Ast.StringLiteral.value = "baz"; raw = "\"baz\""; comments = None });
                 default = None;
                 specifiers =
                   Some
@@ -400,8 +449,6 @@ class insert_second_cjsimport_mapper =
     method! statement_list stmts =
       if List.length stmts > 0 then
         let open Ast.Statement.Expression in
-        let open Ast.Expression.Call in
-        let open Ast.Literal in
         let stmts = super#statement_list stmts in
         let (loc, _) = List.hd stmts in
         let imp =
@@ -412,7 +459,7 @@ class insert_second_cjsimport_mapper =
                   ( loc,
                     Ast.Expression.Call
                       {
-                        callee =
+                        Ast.Expression.Call.callee =
                           ( loc,
                             Ast.Expression.Identifier
                               (Flow_ast_utils.ident_of_source (loc, "require")) );
@@ -426,7 +473,7 @@ class insert_second_cjsimport_mapper =
                                     ( loc,
                                       Ast.Expression.Literal
                                         {
-                                          value = Ast.Literal.String "baz";
+                                          Ast.Literal.value = Ast.Literal.String "baz";
                                           raw = "\"baz\"";
                                           comments = None;
                                         } );
@@ -451,8 +498,6 @@ class add_body_mapper =
     method! statement_list stmts =
       if List.length stmts > 0 then
         let open Ast.Statement.Expression in
-        let open Ast.Expression.Call in
-        let open Ast.Literal in
         let stmts = super#statement_list stmts in
         let (loc, _) = List.rev stmts |> List.hd in
         let imp =
@@ -463,7 +508,7 @@ class add_body_mapper =
                   ( loc,
                     Ast.Expression.Call
                       {
-                        callee =
+                        Ast.Expression.Call.callee =
                           ( loc,
                             Ast.Expression.Identifier (Flow_ast_utils.ident_of_source (loc, "foo"))
                           );
@@ -477,7 +522,7 @@ class add_body_mapper =
                                     ( loc,
                                       Ast.Expression.Literal
                                         {
-                                          value = Ast.Literal.String "baz";
+                                          Ast.Literal.value = Ast.Literal.String "baz";
                                           raw = "\"baz\"";
                                           comments = None;
                                         } );
@@ -562,7 +607,14 @@ class insert_function_annot_mapper =
               Type.Function
                 {
                   Type.Function.tparams = None;
-                  params = (loc, { Type.Function.Params.params = []; rest = None; comments = None });
+                  params =
+                    ( loc,
+                      {
+                        Type.Function.Params.this_ = None;
+                        params = [];
+                        rest = None;
+                        comments = None;
+                      } );
                   return = (loc, Type.Number None);
                   comments = None;
                 } ) )
@@ -582,7 +634,14 @@ class insert_import_and_annot_mapper =
               Type.Function
                 {
                   Type.Function.tparams = None;
-                  params = (loc, { Type.Function.Params.params = []; rest = None; comments = None });
+                  params =
+                    ( loc,
+                      {
+                        Type.Function.Params.this_ = None;
+                        params = [];
+                        rest = None;
+                        comments = None;
+                      } );
                   return = (loc, Type.Number None);
                   comments = None;
                 } ) )
@@ -595,7 +654,7 @@ class insert_import_and_annot_mapper =
           ( Loc.none,
             ImportDeclaration
               {
-                ImportDeclaration.importKind = ImportDeclaration.ImportType;
+                ImportDeclaration.import_kind = ImportDeclaration.ImportType;
                 source = (Loc.none, { Ast.StringLiteral.value = imp; raw = imp; comments = None });
                 default = None;
                 specifiers =
@@ -694,12 +753,11 @@ class true_to_false_mapper =
       | _ -> expr
 
     method! type_annotation (annot : (Loc.t, Loc.t) Ast.Type.annotation) =
-      let open Ast.Type in
       let (t1, a) = annot in
       let (t2, right_var) = a in
       match right_var with
-      | BooleanLiteral { Ast.BooleanLiteral.value = true; comments } ->
-        (t1, (t2, BooleanLiteral { Ast.BooleanLiteral.value = false; comments }))
+      | Ast.Type.BooleanLiteral { Ast.BooleanLiteral.value = true; comments } ->
+        (t1, (t2, Ast.Type.BooleanLiteral { Ast.BooleanLiteral.value = false; comments }))
       | _ -> annot
   end
 
@@ -836,9 +894,9 @@ let tests =
            let source = "function foo() { (5 - 3); 4; (6 + 4); }" in
            assert_edits_equal
              ctxt
-             ~edits:[((26, 27), "5"); ((30, 35), "(6 - 5)")]
+             ~edits:[((26, 27), "5"); ((30, 35), "6 - 5")]
              ~source
-             ~expected:"function foo() { (5 - 3); 5; ((6 - 5)); }"
+             ~expected:"function foo() { (5 - 3); 5; (6 - 5); }"
              ~mapper:(new useless_mapper) );
          ( "class" >:: fun ctxt ->
            let source = "class Foo { bar() { 4; } }" in
@@ -1061,17 +1119,17 @@ let tests =
            let source = "new foo<>()" in
            assert_edits_equal
              ctxt
-             ~edits:[((0, 11), "(new foo<any>())")]
+             ~edits:[((0, 11), "new foo<any>()")]
              ~source
-             ~expected:"(new foo<any>())"
+             ~expected:"new foo<any>()"
              ~mapper:(new insert_call_type_args) );
          ( "new_type_param_implicit" >:: fun ctxt ->
            let source = "new foo<_>()" in
            assert_edits_equal
              ctxt
-             ~edits:[((0, 12), "(new foo<any>())")]
+             ~edits:[((0, 12), "new foo<any>()")]
              ~source
-             ~expected:"(new foo<any>())"
+             ~expected:"new foo<any>()"
              ~mapper:(new useless_mapper) );
          ( "member" >:: fun ctxt ->
            let source = "rename.a" in
@@ -1109,9 +1167,9 @@ let tests =
            let source = "+rename" in
            assert_edits_equal
              ctxt
-             ~edits:[((0, 7), "(-gotRenamed)")]
+             ~edits:[((0, 7), "-gotRenamed")]
              ~source
-             ~expected:"(-gotRenamed)"
+             ~expected:"-gotRenamed"
              ~mapper:(new useless_mapper) );
          ( "block" >:: fun ctxt ->
            let source = "{ 2; 4; 10; rename; }" in
@@ -1688,9 +1746,9 @@ let tests =
            let source = "function foo() { /* comment */ (5 - 3); 4; (6 + 4); /* comment */}" in
            assert_edits_equal
              ctxt
-             ~edits:[((40, 41), "5"); ((44, 49), "(6 - 5)")]
+             ~edits:[((40, 41), "5"); ((44, 49), "6 - 5")]
              ~source
-             ~expected:"function foo() { /* comment */ (5 - 3); 5; ((6 - 5)); /* comment */}"
+             ~expected:"function foo() { /* comment */ (5 - 3); 5; (6 - 5); /* comment */}"
              ~mapper:(new useless_mapper) );
          ( "fn_default_export" >:: fun ctxt ->
            let source = "export default function foo() { let x = rename; }" in
@@ -1985,41 +2043,41 @@ let tests =
            let source = "a ?? b" in
            assert_edits_equal
              ctxt
-             ~edits:[((0, 6), "(a || b)")]
+             ~edits:[((0, 6), "a || b")]
              ~source
-             ~expected:"(a || b)"
+             ~expected:"a || b"
              ~mapper:(new useless_mapper) );
          ( "insert_import_split" >:: fun ctxt ->
            let source = "5 - (2 + 2)" in
            assert_edits_equal_standard_only
              ctxt
-             ~edits:[((0, 0), "import {baz} from \"baz\";"); ((5, 10), "(2 - 2)")]
+             ~edits:[((0, 0), "import { baz } from \"baz\";"); ((5, 10), "(2 - 2)")]
              ~source
-             ~expected:"import {baz} from \"baz\";5 - ((2 - 2))"
+             ~expected:"import { baz } from \"baz\";5 - ((2 - 2))"
              ~mapper:(new insert_import_mapper) );
          ( "insert_import_existing_split" >:: fun ctxt ->
            let source = "foo; 5 - (2 + 2)" in
            assert_edits_equal_standard_only
              ctxt
-             ~edits:[((0, 0), "import {baz} from \"baz\";"); ((10, 15), "(2 - 2)")]
+             ~edits:[((0, 0), "import { baz } from \"baz\";"); ((10, 15), "(2 - 2)")]
              ~source
-             ~expected:"import {baz} from \"baz\";foo; 5 - ((2 - 2))"
+             ~expected:"import { baz } from \"baz\";foo; 5 - ((2 - 2))"
              ~mapper:(new insert_import_mapper) );
          ( "insert_import_second_split" >:: fun ctxt ->
            let source = "import bing from 'bing'; 5 - (2 + 2)" in
            assert_edits_equal_standard_only
              ctxt
-             ~edits:[((24, 24), "import {baz} from \"baz\";"); ((30, 35), "(2 - 2)")]
+             ~edits:[((24, 24), "import { baz } from \"baz\";"); ((30, 35), "(2 - 2)")]
              ~source
-             ~expected:"import bing from 'bing';import {baz} from \"baz\"; 5 - ((2 - 2))"
+             ~expected:"import bing from 'bing';import { baz } from \"baz\"; 5 - ((2 - 2))"
              ~mapper:(new insert_second_import_mapper) );
          ( "existing_cjs_import_split" >:: fun ctxt ->
            let source = "const x = require('bing'); 5 - (2 + 2)" in
            assert_edits_equal_standard_only
              ctxt
-             ~edits:[((26, 26), "import {baz} from \"baz\";"); ((32, 37), "(2 - 2)")]
+             ~edits:[((26, 26), "import { baz } from \"baz\";"); ((32, 37), "(2 - 2)")]
              ~source
-             ~expected:"const x = require('bing');import {baz} from \"baz\"; 5 - ((2 - 2))"
+             ~expected:"const x = require('bing');import { baz } from \"baz\"; 5 - ((2 - 2))"
              ~mapper:(new insert_second_import_mapper) );
          ( "insert_cjs_import_split" >:: fun ctxt ->
            let source = "import 'bing'; 5 - (2 + 2)" in
@@ -2191,17 +2249,17 @@ let tests =
            let source = "<selfClosing></selfClosing>" in
            assert_edits_equal
              ctxt
-             ~edits:[((0, 27), "(<selfClosing />)")]
+             ~edits:[((0, 27), "<selfClosing />")]
              ~source
-             ~expected:"(<selfClosing />)"
+             ~expected:"<selfClosing />"
              ~mapper:(new useless_mapper) );
          ( "jsx_element_from_self_closing" >:: fun ctxt ->
            let source = "<notSelfClosing />" in
            assert_edits_equal
              ctxt
-             ~edits:[((0, 18), "(<notSelfClosing></notSelfClosing>)")]
+             ~edits:[((0, 18), "<notSelfClosing></notSelfClosing>")]
              ~source
-             ~expected:"(<notSelfClosing></notSelfClosing>)"
+             ~expected:"<notSelfClosing></notSelfClosing>"
              ~mapper:(new useless_mapper) );
          ( "jsx_element_attribute_name" >:: fun ctxt ->
            let source = "<Component rename={1} />" in
@@ -2223,9 +2281,9 @@ let tests =
            let source = "<Component someProp={4 + 4} />" in
            assert_edits_equal
              ctxt
-             ~edits:[((21, 26), "(5 - 5)")]
+             ~edits:[((21, 26), "5 - 5")]
              ~source
-             ~expected:"<Component someProp={(5 - 5)} />"
+             ~expected:"<Component someProp={5 - 5} />"
              ~mapper:(new useless_mapper) );
          ( "jsx_element_attribute_name_and_value" >:: fun ctxt ->
            let source = "<Component rename={4} />" in
@@ -2642,9 +2700,9 @@ let tests =
            let source = "--rename" in
            assert_edits_equal
              ctxt
-             ~edits:[((0, 8), "(++gotRenamed)")]
+             ~edits:[((0, 8), "++gotRenamed")]
              ~source
-             ~expected:"(++gotRenamed)"
+             ~expected:"++gotRenamed"
              ~mapper:(new useless_mapper) );
          ( "update_arrow_function_single_param" >:: fun ctxt ->
            let source = "const x = bla => { return 0; };" in
@@ -2675,8 +2733,8 @@ let tests =
              ~edits:
                [
                  ( (13, 13),
-                   "import type {there as here} from \"new_import1\";
-import type {there as here} from \"new_import2\";"
+                   "import type { there as here } from \"new_import1\";
+import type { there as here } from \"new_import2\";"
                  );
                  ((20, 20), ": (() => number)");
                  ((23, 26), "(bla: () => number)");
@@ -2684,8 +2742,8 @@ import type {there as here} from \"new_import2\";"
                ]
              ~source
              ~expected:
-               "'use strict';import type {there as here} from \"new_import1\";
-import type {there as here} from \"new_import2\";const x: (() => number) = (bla: () => number): (() => number) => { return 0; };"
+               "'use strict';import type { there as here } from \"new_import1\";
+import type { there as here } from \"new_import2\";const x: (() => number) = (bla: () => number): (() => number) => { return 0; };"
              ~mapper:(new insert_import_and_annot_mapper) );
          ( "import_renamed_simple" >:: fun ctxt ->
            let source = "import rename from \"foo\";" in
@@ -2963,9 +3021,9 @@ import type {there as here} from \"new_import2\";const x: (() => number) = (bla:
            let source = "(a, b, c, d)" in
            assert_edits_equal
              ctxt
-             ~edits:[((1, 11), "(a, b, c, d, a, b, c, d)")]
+             ~edits:[((1, 11), "a, b, c, d, a, b, c, d")]
              ~source
-             ~expected:"((a, b, c, d, a, b, c, d))"
+             ~expected:"(a, b, c, d, a, b, c, d)"
              ~mapper:(new double_sequence_mapper) );
          ( "declare_class_id" >:: fun ctxt ->
            let source = "declare class rename { }" in
@@ -2998,5 +3056,47 @@ import type {there as here} from \"new_import2\";const x: (() => number) = (bla:
              ~edits:[((21, 27), "gotRenamed")]
              ~source
              ~expected:"declare class C { f: gotRenamed }"
+             ~mapper:(new useless_mapper) );
+         ( "enum_declaration_unchanged" >:: fun ctxt ->
+           let source = "enum Status {On, Off}" in
+           (* use an unrelated mapper to ensure enums are not affected *)
+           assert_edits_equal
+             ctxt
+             ~edits:[]
+             ~source
+             ~expected:"enum Status {On, Off}"
+             ~mapper:(new literal_mapper) );
+         ( "enum_comments_unchanged" >:: fun ctxt ->
+           let source = "enum Status {On, Off // internal comment\n}" in
+           (* use an unrelated mapper to ensure enums are not affected *)
+           assert_edits_equal
+             ctxt
+             ~edits:[]
+             ~source
+             ~expected:"enum Status {On, Off // internal comment\n}"
+             ~mapper:(new literal_mapper) );
+         ( "enum_declaration_defaulted_string" >:: fun ctxt ->
+           let source = "enum Status {On, Off}" in
+           assert_edits_equal
+             ctxt
+             ~edits:[((13, 15), "Enabled")]
+             ~source
+             ~expected:"enum Status {Enabled, Off}"
+             ~mapper:(new useless_mapper) );
+         ( "enum_declaration_string" >:: fun ctxt ->
+           let source = "enum Status {On = 'on', Off = 'off'}" in
+           assert_edits_equal
+             ctxt
+             ~edits:[((18, 22), "'enabled'")]
+             ~source
+             ~expected:"enum Status {On = 'enabled', Off = 'off'}"
+             ~mapper:(new useless_mapper) );
+         ( "enum_add_comment" >:: fun ctxt ->
+           let source = "enum Status {On = 1, Off = 2}" in
+           assert_edits_equal
+             ctxt
+             ~edits:[((19, 19), "// a comment\n")]
+             ~source
+             ~expected:"enum Status {On = 1// a comment\n, Off = 2}"
              ~mapper:(new useless_mapper) );
        ]

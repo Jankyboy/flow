@@ -6,10 +6,6 @@
  *)
 
 module Request = struct
-  type refactor_variant = RENAME of string
-
-  (* new name *)
-
   type command =
     | AUTOCOMPLETE of {
         filename: string option;
@@ -17,6 +13,7 @@ module Request = struct
         cursor: int * int;
         trigger_character: string option;
         wait_for_recheck: bool option;
+        imports: bool;  (** include auto-import suggestions *)
       }
     | AUTOFIX_EXPORTS of {
         input: File_input.t;
@@ -107,12 +104,6 @@ module Request = struct
         omit_targ_defaults: bool;
       }
     | RAGE of { files: string list }
-    | REFACTOR of {
-        input: File_input.t;
-        line: int;
-        char: int;
-        refactor_variant: refactor_variant;
-      }
     | SAVE_STATE of { outfile: Path.t }
     | STATUS of {
         client_root: Path.t;
@@ -123,12 +114,16 @@ module Request = struct
         wait_for_recheck: bool option;
       }
 
-  let string_of_refactor_variant = function
-    | RENAME new_name -> Printf.sprintf "rename(%s)" new_name
-
   let to_string = function
     | AUTOCOMPLETE
-        { filename; contents = _; cursor = _; wait_for_recheck = _; trigger_character = _ } ->
+        {
+          filename;
+          contents = _;
+          cursor = _;
+          wait_for_recheck = _;
+          trigger_character = _;
+          imports = _;
+        } ->
       let filename =
         match filename with
         | None -> "-"
@@ -189,13 +184,6 @@ module Request = struct
           target._end.line
           target._end.column)
     | RAGE { files } -> Printf.sprintf "rage %s" (String.concat " " files)
-    | REFACTOR { input; line; char; refactor_variant } ->
-      Printf.sprintf
-        "refactor %s:%d:%d:%s"
-        (File_input.filename_of_file_input input)
-        line
-        char
-        (string_of_refactor_variant refactor_variant)
     | STATUS { client_root = _; include_warnings = _ } -> "status"
     | SUGGEST _ -> "suggest"
     | SAVE_STATE { outfile } -> Printf.sprintf "save-state %s" (Path.to_string outfile)
@@ -226,19 +214,27 @@ module Response = struct
     return_ty: string;
   }
 
-  (* Results ready to be displayed to the user *)
-  type complete_autocomplete_result = {
-    res_loc: Loc.t;
-    res_ty: string;
-    res_kind: Lsp.Completion.completionItemKind option;
-    res_name: string;
-    res_insert_text: string option;
-    rank: int;
-    res_preselect: bool;
-    res_documentation: string option;
-  }
+  module Completion = struct
+    type completion_item = {
+      detail: string;
+      kind: Lsp.Completion.completionItemKind option;
+      name: string;
+      text_edits: (Loc.t * string) list;
+      sort_text: string option;
+      preselect: bool;
+      documentation: string option;
+      log_info: string;
+      source: string option;  (** autoimport source *)
+      type_: string option;
+    }
 
-  type autocomplete_response = (complete_autocomplete_result list, string) result
+    type t = {
+      items: completion_item list;
+      is_incomplete: bool;
+    }
+  end
+
+  type autocomplete_response = (Completion.t, string) result
 
   type autofix_exports_response = (Replacement_printer.patch * string list, string) result
 
@@ -272,11 +268,7 @@ module Response = struct
 
   type textedit = Loc.t * string
 
-  type refactor_ok = { refactor_edits: textedit list }
-
   type rage_response = (string * string) list
-
-  type refactor_response = (refactor_ok option, string) result
 
   type suggest_result =
     | Suggest_Ok of {
@@ -329,7 +321,6 @@ module Response = struct
     | INFER_TYPE of infer_type_response
     | INSERT_TYPE of insert_type_response
     | RAGE of rage_response
-    | REFACTOR of refactor_response
     | STATUS of {
         status_response: status_response;
         lazy_stats: lazy_stats;
@@ -354,7 +345,6 @@ module Response = struct
     | INFER_TYPE _ -> "infer_type response"
     | INSERT_TYPE _ -> "insert_type response"
     | RAGE _ -> "rage response"
-    | REFACTOR _ -> "refactor response"
     | STATUS _ -> "status response"
     | SUGGEST _ -> "suggest response"
     | SAVE_STATE _ -> "save_state response"

@@ -43,7 +43,7 @@ val reasonless_compare : Type.t -> Type.t -> int
 
 val reasonless_eq : Type.t -> Type.t -> bool
 
-val literal_eq : string -> string Type.literal -> bool
+val literal_eq : 'a -> 'a Type.literal -> bool
 
 val number_literal_eq : Type.number_literal -> Type.number_literal Type.literal -> bool
 
@@ -63,7 +63,7 @@ val exact : Type.t -> Type.t
 
 val class_type : ?structural:bool -> ?annot_loc:ALoc.t -> Type.t -> Type.t
 
-val this_class_type : Type.t -> Type.t
+val this_class_type : Type.t -> bool -> Type.t
 
 val extends_type : reason -> Type.t -> Type.t -> Type.t
 
@@ -86,3 +86,14 @@ val this_typeapp : ?annot_loc:ALoc.t -> Type.t -> Type.t -> Type.t list option -
 val push_type_alias_reason : reason -> Type.t -> Type.t
 
 val pred_map_implies : Type.predicate Key_map.t -> Type.predicate Key_map.t -> bool
+
+val type_t_of_annotated_or_inferred : Type.annotated_or_inferred -> Type.t
+
+val map_annotated_or_inferred :
+  (Type.t -> Type.t) -> Type.annotated_or_inferred -> Type.annotated_or_inferred
+
+val union_of_ts : reason -> Type.t list -> Type.t
+
+val annotated_or_inferred_of_option : default:Type.t -> Type.t option -> Type.annotated_or_inferred
+
+val subtype_this_of_function : Type.funtype -> Type.t

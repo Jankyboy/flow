@@ -31,6 +31,7 @@ type trigger =
   | Rage
   | Rename
   | ServerConnected
+  | SelectionRange
   | SignatureHelp
   | TypeCoverage
   | ExecuteCommand
@@ -97,6 +98,7 @@ let string_of_trigger = function
   | Rage -> "Rage"
   | Rename -> "Rename"
   | ServerConnected -> "ServerConnected"
+  | SelectionRange -> "SelectionRange"
   | SignatureHelp -> "SignatureHelp"
   | TypeCoverage -> "TypeCoverage"
   | ExecuteCommand -> "ExecuteCommand"
@@ -139,6 +141,7 @@ let source_of_trigger = function
   | Hover
   | Rage
   | Rename
+  | SelectionRange
   | SignatureHelp
   | TypeCoverage
   | ExecuteCommand ->
@@ -263,7 +266,7 @@ let init () = FlowInteractionLogger.init ()
 
 let flush () = FlowInteractionLogger.flush ()
 
-(* Not every message the the lsp process receives triggers an interaction. This function
+(* Not every message the lsp process receives triggers an interaction. This function
  * enumerates which methods we care about and what trigger they correspond to *)
 let trigger_of_lsp_msg =
   let open Lsp in
@@ -279,11 +282,13 @@ let trigger_of_lsp_msg =
   | RequestMessage (_, RageRequest) -> Some Rage
   | RequestMessage (_, RenameRequest _) -> Some Rename
   | RequestMessage (_, TypeCoverageRequest _) -> Some TypeCoverage
+  | RequestMessage (_, SelectionRangeRequest _) -> Some SelectionRange
   | RequestMessage (_, SignatureHelpRequest _) -> Some SignatureHelp
   | RequestMessage (_, ExecuteCommandRequest _) -> Some ExecuteCommand
   (* Requests which we don't care about. Some are unsupported and some are sent from the lsp to
-    * the client *)
+     * the client *)
   | RequestMessage (_, CompletionItemResolveRequest _)
+  | RequestMessage (_, ConfigurationRequest _)
   | RequestMessage (_, DocumentFormattingRequest _)
   | RequestMessage (_, DocumentOnTypeFormattingRequest _)
   | RequestMessage (_, DocumentRangeFormattingRequest _)
@@ -307,6 +312,8 @@ let trigger_of_lsp_msg =
   | ResponseMessage (_, DefinitionResult _)
   | ResponseMessage (_, CompletionResult _)
   | ResponseMessage (_, CompletionItemResolveResult _)
+  | ResponseMessage (_, ConfigurationResult _)
+  | ResponseMessage (_, SelectionRangeResult _)
   | ResponseMessage (_, SignatureHelpResult _)
   | ResponseMessage (_, WorkspaceSymbolResult _)
   | ResponseMessage (_, DocumentSymbolResult _)
@@ -316,6 +323,7 @@ let trigger_of_lsp_msg =
   | ResponseMessage (_, DocumentCodeLensResult _)
   | ResponseMessage (_, TypeCoverageResult _)
   | ResponseMessage (_, ExecuteCommandResult _)
+  | ResponseMessage (_, RegisterCapabilityResult)
   (* TODO not sure if this is right, just need to unbreak the build. *)
   | ResponseMessage (_, TypeDefinitionResult _)
   | ResponseMessage (_, DocumentFormattingResult _)
@@ -345,5 +353,6 @@ let trigger_of_lsp_msg =
   | NotificationMessage SetTraceNotification
   | NotificationMessage LogTraceNotification
   | NotificationMessage (UnknownNotification _)
+  | NotificationMessage (DidChangeConfigurationNotification _)
   | NotificationMessage (DidChangeWatchedFilesNotification _) ->
     None

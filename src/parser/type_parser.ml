@@ -154,8 +154,13 @@ module Type (Parse : Parser_common.PARSER) : TYPE = struct
         let param = anonymous_function_param env param in
         ( fst param,
           None,
-          (fst param, { Ast.Type.Function.Params.params = [param]; rest = None; comments = None })
-        )
+          ( fst param,
+            {
+              Ast.Type.Function.Params.params = [param];
+              this_ = None;
+              rest = None;
+              comments = None;
+            } ) )
       in
       function_with_params env start_loc tparams params
     | _ -> param
@@ -179,21 +184,60 @@ module Type (Parse : Parser_common.PARSER) : TYPE = struct
     let t = primary env in
     postfix_with env t
 
-  and postfix_with env t =
-    if (not (Peek.is_line_terminator env)) && Expect.maybe env T_LBRACKET then
-      let t =
-        with_loc
-          ~start_loc:(fst t)
-          (fun env ->
-            Expect.token env T_RBRACKET;
+  and postfix_with ?(in_optional_indexed_access = false) env t =
+    if Peek.is_line_terminator env then
+      t
+    else
+      match Peek.token env with
+      | T_PLING_PERIOD ->
+        Eat.token env;
+        if Peek.token env <> T_LBRACKET then error env Parse_error.InvalidOptionalIndexedAccess;
+        Expect.token env T_LBRACKET;
+        postfix_brackets ~in_optional_indexed_access:true ~optional_indexed_access:true env t
+      | T_LBRACKET ->
+        Eat.token env;
+        postfix_brackets ~in_optional_indexed_access ~optional_indexed_access:false env t
+      | T_PERIOD ->
+        (match Peek.ith_token ~i:1 env with
+        | T_LBRACKET ->
+          error env (Parse_error.InvalidIndexedAccess { has_bracket = true });
+          Expect.token env T_PERIOD;
+          Expect.token env T_LBRACKET;
+          postfix_brackets ~in_optional_indexed_access ~optional_indexed_access:false env t
+        | _ ->
+          error env (Parse_error.InvalidIndexedAccess { has_bracket = false });
+          t)
+      | _ -> t
+
+  and postfix_brackets ~in_optional_indexed_access ~optional_indexed_access env t =
+    let t =
+      with_loc
+        ~start_loc:(fst t)
+        (fun env ->
+          (* Legacy Array syntax `Foo[]` *)
+          if (not optional_indexed_access) && Eat.maybe env T_RBRACKET then
             let trailing = Eat.trailing_comments env in
             Type.Array
-              { Type.Array.argument = t; comments = Flow_ast_utils.mk_comments_opt ~trailing () })
-          env
-      in
-      postfix_with env t
-    else
-      t
+              { Type.Array.argument = t; comments = Flow_ast_utils.mk_comments_opt ~trailing () }
+          else
+            let index = _type env in
+            Expect.token env T_RBRACKET;
+            let trailing = Eat.trailing_comments env in
+            let indexed_access =
+              {
+                Type.IndexedAccess._object = t;
+                index;
+                comments = Flow_ast_utils.mk_comments_opt ~trailing ();
+              }
+            in
+            if in_optional_indexed_access then
+              Type.OptionalIndexedAccess
+                { Type.OptionalIndexedAccess.indexed_access; optional = optional_indexed_access }
+            else
+              Type.IndexedAccess indexed_access)
+        env
+    in
+    postfix_with env ~in_optional_indexed_access t
 
   and primary env =
     let loc = Peek.loc env in
@@ -384,7 +428,7 @@ module Type (Parse : Parser_common.PARSER) : TYPE = struct
         let name = Parse.identifier env in
         Eat.pop_lex_mode env;
         if not (should_parse_types env) then error env Parse_error.UnexpectedTypeAnnotation;
-        let optional = Expect.maybe env T_PLING in
+        let optional = Eat.maybe env T_PLING in
         Expect.token env T_COLON;
         let annot = _type env in
         { Type.Function.Param.name = Some name; annot; optional })
@@ -400,7 +444,7 @@ module Type (Parse : Parser_common.PARSER) : TYPE = struct
         let annot = _type env in
         anonymous_function_param env annot
     in
-    let rec param_list env acc =
+    let rec param_list env this_ acc =
       match Peek.token env with
       | (T_EOF | T_ELLIPSIS | T_RPAREN) as t ->
         let rest =
@@ -420,13 +464,30 @@ module Type (Parse : Parser_common.PARSER) : TYPE = struct
           else
             None
         in
-        { Ast.Type.Function.Params.params = List.rev acc; rest; comments = None }
+        { Ast.Type.Function.Params.params = List.rev acc; rest; this_; comments = None }
+      | T_IDENTIFIER { raw = "this"; _ }
+        when Peek.ith_token ~i:1 env == T_COLON || Peek.ith_token ~i:1 env == T_PLING ->
+        if this_ <> None || acc <> [] then error env Parse_error.ThisParamMustBeFirst;
+        let this_ =
+          with_loc
+            (fun env ->
+              let leading = Peek.comments env in
+              Eat.token env;
+              if Peek.token env == T_PLING then error env Parse_error.ThisParamMayNotBeOptional;
+              {
+                Type.Function.ThisParam.annot = annotation env;
+                comments = Flow_ast_utils.mk_comments_opt ~leading ();
+              })
+            env
+        in
+        if Peek.token env <> T_RPAREN then Expect.token env T_COMMA;
+        param_list env (Some this_) acc
       | _ ->
         let acc = param env :: acc in
         if Peek.token env <> T_RPAREN then Expect.token env T_COMMA;
-        param_list env acc
+        param_list env this_ acc
     in
-    (fun env -> param_list env)
+    (fun env -> param_list env None)
 
   and function_param_list env =
     with_loc
@@ -456,7 +517,8 @@ module Type (Parse : Parser_common.PARSER) : TYPE = struct
         ParamList (function_param_list_without_parens env [])
       | T_RPAREN ->
         (* () or is definitely a param list *)
-        ParamList { Ast.Type.Function.Params.params = []; rest = None; comments = None }
+        ParamList
+          { Ast.Type.Function.Params.this_ = None; params = []; rest = None; comments = None }
       | T_IDENTIFIER _
       | T_STATIC (* `static` is reserved in strict mode, but still an identifier *) ->
         (* This could be a function parameter or a generic type *)
@@ -521,11 +583,11 @@ module Type (Parse : Parser_common.PARSER) : TYPE = struct
     | _ ->
       let id = type_identifier env in
       Type
-        ( generic_type_with_identifier env id
+        (generic_type_with_identifier env id
         |> postfix_with env
         |> anon_function_without_parens_with env
         |> intersection_with env
-        |> union_with env )
+        |> union_with env)
 
   and function_or_group env =
     let start_loc = Peek.loc env in
@@ -604,7 +666,7 @@ module Type (Parse : Parser_common.PARSER) : TYPE = struct
         with_loc
           ~start_loc
           (fun env ->
-            let optional = Expect.maybe env T_PLING in
+            let optional = Eat.maybe env T_PLING in
             Expect.token env T_COLON;
             let value = _type env in
             Type.Object.Property.
@@ -633,7 +695,14 @@ module Type (Parse : Parser_common.PARSER) : TYPE = struct
             let (_, { Type.Function.params; _ }) = value in
             begin
               match (is_getter, params) with
-              | (true, (_, { Type.Function.Params.params = []; rest = None; comments = _ })) -> ()
+              | (true, (_, { Type.Function.Params.this_ = Some _; _ })) ->
+                error_at env (key_loc, Parse_error.GetterMayNotHaveThisParam)
+              | (false, (_, { Type.Function.Params.this_ = Some _; _ })) ->
+                error_at env (key_loc, Parse_error.SetterMayNotHaveThisParam)
+              | ( true,
+                  (_, { Type.Function.Params.params = []; rest = None; this_ = None; comments = _ })
+                ) ->
+                ()
               | (false, (_, { Type.Function.Params.rest = Some _; _ })) ->
                 (* rest params don't make sense on a setter *)
                 error_at env (key_loc, Parse_error.SetterArity)
@@ -645,10 +714,10 @@ module Type (Parse : Parser_common.PARSER) : TYPE = struct
               {
                 key;
                 value =
-                  ( if is_getter then
+                  (if is_getter then
                     Get value
                   else
-                    Set value );
+                    Set value);
                 optional = false;
                 static = static <> None;
                 proto = false;
@@ -714,7 +783,7 @@ module Type (Parse : Parser_common.PARSER) : TYPE = struct
                 in
                 (false, true, value, [])
               | _ ->
-                let optional = Expect.maybe env T_PLING in
+                let optional = Eat.maybe env T_PLING in
                 let trailing = Eat.trailing_comments env in
                 Expect.token env T_COLON;
                 let value = _type env in
@@ -968,8 +1037,8 @@ module Type (Parse : Parser_common.PARSER) : TYPE = struct
           let leading_key = Peek.comments env in
           (match object_key env with
           | ( _,
-              ( Expression.Object.Property.Identifier
-                  (_, { Identifier.name = ("get" | "set") as name; comments = _ }) as key ) ) ->
+              (Expression.Object.Property.Identifier
+                 (_, { Identifier.name = ("get" | "set") as name; comments = _ }) as key) ) ->
             begin
               match Peek.token env with
               | T_LESS_THAN
@@ -1010,10 +1079,10 @@ module Type (Parse : Parser_common.PARSER) : TYPE = struct
           let leading = Peek.comments env in
           Expect.token
             env
-            ( if exact then
+            (if exact then
               T_LCURLYBAR
             else
-              T_LCURLY );
+              T_LCURLY);
           let (properties, inexact, internal) =
             let env = with_no_anon_function_type false env in
             properties ~is_class ~allow_inexact ~exact ~allow_spread env ([], false, [])
@@ -1021,10 +1090,10 @@ module Type (Parse : Parser_common.PARSER) : TYPE = struct
           let internal = internal @ Peek.comments env in
           Expect.token
             env
-            ( if exact then
+            (if exact then
               T_RCURLYBAR
             else
-              T_RCURLY );
+              T_RCURLY);
           let trailing = Eat.trailing_comments env in
 
           (* inexact = true iff `...` was used to indicate inexactnes *)
@@ -1166,7 +1235,7 @@ module Type (Parse : Parser_common.PARSER) : TYPE = struct
 
   and raw_generic_with_identifier =
     let rec identifier env (q_loc, qualification) =
-      if Peek.token env = T_PERIOD then
+      if Peek.token env = T_PERIOD && Peek.ith_is_type_identifier ~i:1 env then
         let (loc, q) =
           with_loc
             ~start_loc:q_loc
@@ -1244,6 +1313,19 @@ module Type (Parse : Parser_common.PARSER) : TYPE = struct
         Array { t with Array.comments = merge_comments comments }
       | Generic ({ Generic.comments; _ } as t) ->
         Generic { t with Generic.comments = merge_comments comments }
+      | IndexedAccess ({ IndexedAccess.comments; _ } as t) ->
+        IndexedAccess { t with IndexedAccess.comments = merge_comments comments }
+      | OptionalIndexedAccess
+          {
+            OptionalIndexedAccess.indexed_access = { IndexedAccess.comments; _ } as indexed_access;
+            optional;
+          } ->
+        OptionalIndexedAccess
+          {
+            OptionalIndexedAccess.indexed_access =
+              { indexed_access with IndexedAccess.comments = merge_comments comments };
+            optional;
+          }
       | Union ({ Union.comments; _ } as t) ->
         Union { t with Union.comments = merge_comments comments }
       | Intersection ({ Intersection.comments; _ } as t) ->

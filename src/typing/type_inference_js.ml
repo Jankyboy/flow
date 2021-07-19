@@ -20,7 +20,7 @@ module ImpExp = Import_export
 let infer_core cx statements =
   try
     statements |> Statement.toplevel_decls cx;
-    statements |> Statement.toplevels cx
+    statements |> Toplevels.toplevels Statement.statement cx
   with
   | Abnormal.Exn (Abnormal.Stmts stmts, Abnormal.Throw) ->
     (* throw is allowed as a top-level statement *)
@@ -49,21 +49,23 @@ let scan_for_error_suppressions cx =
   (* If multiple comments are stacked together, we join them into a codeset positioned on the
      location of the last comment *)
   Base.List.fold_left
-    ~f:(fun acc -> function
-      | (({ Loc.start = { Loc.line; _ }; _ } as loc), { Ast.Comment.text; _ }) ->
-        begin
-          match (should_suppress text loc, acc) with
-          | (Ok (Some (Specific _ as codes)), Some (prev_loc, (Specific _ as prev_codes)))
-            when line = prev_loc.Loc._end.Loc.line + 1 ->
-            Some ({ prev_loc with Loc._end = loc.Loc._end }, join_applicable_codes codes prev_codes)
-          | (Ok codes, _) ->
-            Base.Option.iter ~f:(Context.add_error_suppression cx |> uncurry) acc;
-            Base.Option.map codes ~f:(mk_tuple loc)
-          | (Error (), _) ->
-            Flow_js.add_output cx Error_message.(EMalformedCode (ALoc.of_loc loc));
-            Base.Option.iter ~f:(Context.add_error_suppression cx |> uncurry) acc;
-            None
-        end)
+    ~f:
+      (fun acc -> function
+        | (({ Loc.start = { Loc.line; _ }; _ } as loc), { Ast.Comment.text; _ }) ->
+          begin
+            match (should_suppress text loc, acc) with
+            | (Ok (Some (Specific _ as codes)), Some (prev_loc, (Specific _ as prev_codes)))
+              when line = prev_loc.Loc._end.Loc.line + 1 ->
+              Some
+                ({ prev_loc with Loc._end = loc.Loc._end }, join_applicable_codes codes prev_codes)
+            | (Ok codes, _) ->
+              Base.Option.iter ~f:(Context.add_error_suppression cx |> uncurry) acc;
+              Base.Option.map codes ~f:(mk_tuple loc)
+            | (Error (), _) ->
+              Flow_js.add_output cx Error_message.(EMalformedCode (ALoc.of_loc loc));
+              Base.Option.iter ~f:(Context.add_error_suppression cx |> uncurry) acc;
+              None
+          end)
     ~init:None
   %> Base.Option.iter ~f:(Context.add_error_suppression cx |> uncurry)
 
@@ -388,7 +390,7 @@ let add_require_tvars =
 
 (* build module graph *)
 (* Lint suppressions are handled iff lint_severities is Some. *)
-let infer_ast ~lint_severities ~file_sig cx filename comments aloc_ast =
+let infer_ast ~lint_severities cx filename comments aloc_ast =
   assert (Context.is_checked cx);
 
   let ( prog_aloc,
@@ -399,12 +401,11 @@ let infer_ast ~lint_severities ~file_sig cx filename comments aloc_ast =
         } ) =
     aloc_ast
   in
-  add_require_tvars cx file_sig;
-  Context.set_local_env cx file_sig.File_sig.With_ALoc.exported_locals;
 
   let module_ref = Context.module_ref cx in
   begin
-    try Context.set_use_def cx @@ Ssa_builder.With_ALoc.program_with_scope aloc_ast with _ -> ()
+    try Context.set_use_def cx @@ Env_builder.program_with_scope aloc_ast with
+    | Env_builder.AbruptCompletionExn _ -> ()
   end;
 
   let reason_exports_module =
@@ -416,22 +417,21 @@ let infer_ast ~lint_severities ~file_sig cx filename comments aloc_ast =
     Scope.(
       let scope = fresh ~var_scope_kind:Module () in
       add_entry
-        "exports"
-        (Entry.new_var ~loc:(TypeUtil.loc_of_t local_exports_var) local_exports_var)
+        (Reason.OrdinaryName "exports")
+        (Entry.new_var ~loc:(TypeUtil.loc_of_t local_exports_var) (Type.Inferred local_exports_var))
         scope;
 
       add_entry
         (Reason.internal_name "exports")
         (Entry.new_var
            ~loc:(Reason.aloc_of_reason reason_exports_module)
-           ~specific:
-             (Type.DefT (reason_exports_module, Type.bogus_trust (), Type.EmptyT Type.Bottom))
-           (Type.Unsoundness.exports_any reason_exports_module))
+           ~specific:(Type.DefT (reason_exports_module, Type.bogus_trust (), Type.EmptyT))
+           (Type.Inferred (Type.Unsoundness.exports_any reason_exports_module)))
         scope;
 
       scope)
   in
-  Env.init_env cx module_scope;
+  Env.init_env module_scope;
 
   let file_loc = Loc.{ none with source = Some filename } |> ALoc.of_loc in
   let reason = Reason.mk_reason Reason.RExports file_loc in
@@ -453,38 +453,11 @@ let infer_ast ~lint_severities ~file_sig cx filename comments aloc_ast =
       all_comments = aloc_all_comments;
     } )
 
-(* Because libdef parsing is overly permissive, a libdef file might include an
-   unexpected top-level statement like `export type` which mutates the module
-   map and overwrites the builtins object.
-
-   Since all libdefs share a sig_cx, this mutation will cause problems in later
-   lib files if not unwound.
-
-   Until we can restrict libdef parsing to forbid unexpected behaviors like
-   this, we need this wrapper to preserve the existing behavior. However, none
-   of this should be necessary.
-*)
-let with_libdef_builtins cx f =
-  (* Store the original builtins and replace with a fresh tvar. *)
-  let orig_builtins = Flow_js.builtins cx in
-  Flow_js.mk_builtins cx;
-
-  (* This function call might replace the builtins we just installed. *)
-  f ();
-
-  (* Connect the original builtins to the one we just calculated. *)
-  let () =
-    let builtins = Context.find_module cx Files.lib_module_ref in
-    Flow_js.flow_t cx (orig_builtins, builtins)
-  in
-  (* Restore the original builtins tvar for the next file. *)
-  Context.add_module cx Files.lib_module_ref orig_builtins
-
 (* infer a parsed library file.
    processing is similar to an ordinary module, except that
    a) symbols from prior library loads are suppressed if found,
    b) bindings are added as properties to the builtin object
- *)
+*)
 let infer_lib_file ~exclude_syms ~lint_severities ~file_sig cx ast =
   let aloc_ast = Ast_loc_utils.loc_to_aloc_mapper#program ast in
   let (_, { Ast.Program.all_comments; _ }) = ast in
@@ -495,15 +468,14 @@ let infer_lib_file ~exclude_syms ~lint_severities ~file_sig cx ast =
        confident that we don't support them in any sensible way. *)
     add_require_tvars cx file_sig
   in
-  let module_scope = Scope.fresh () in
-  Env.init_env ~exclude_syms cx module_scope;
+  let module_scope = Scope.fresh ~var_scope_kind:Scope.Global () in
+  Env.init_env ~exclude_syms module_scope;
 
-  with_libdef_builtins cx (fun () ->
-      ignore (infer_core cx aloc_statements : (ALoc.t, ALoc.t * Type.t) Ast.Statement.t list);
-      scan_for_suppressions cx lint_severities all_comments);
+  ignore (infer_core cx aloc_statements : (ALoc.t, ALoc.t * Type.t) Ast.Statement.t list);
+  scan_for_suppressions cx lint_severities all_comments;
 
-  ( module_scope
+  (module_scope
   |> Scope.(
-       iter_entries Entry.((fun name entry -> Flow_js.set_builtin cx name (actual_type entry)))) );
+       iter_entries Entry.((fun name entry -> Flow_js.set_builtin cx name (actual_type entry)))));
 
-  SMap.keys Scope.(module_scope.entries)
+  NameUtils.Map.keys Scope.(module_scope.entries)

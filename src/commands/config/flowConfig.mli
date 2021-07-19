@@ -16,9 +16,13 @@ type warning = int * string
 
 type error = int * string
 
-val get : ?allow_cache:bool -> string -> (config * warning list, error) result
+type config_result = (config * warning list, error) result
+
+val get : ?allow_cache:bool -> string -> config_result
 
 val get_hash : ?allow_cache:bool -> string -> Xx.hash
+
+val get_with_hash : ?allow_cache:bool -> string -> config_result * Xx.hash
 
 val empty_config : config
 
@@ -55,39 +59,31 @@ val libs : config -> string list
 val enabled_rollouts : config -> string SMap.t
 
 (* options *)
-val abstract_locations : config -> bool
+val abstract_locations : config -> bool option
 
-val all : config -> bool
+val all : config -> bool option
 
-val automatic_require_default : config -> bool
+val autoimports : config -> bool option
 
-val babel_loose_array_spread : config -> bool
+val automatic_require_default : config -> bool option
 
-val disable_live_non_parse_errors : config -> bool
+val babel_loose_array_spread : config -> bool option
 
-val emoji : config -> bool
+val check_updates_against_providers : config -> bool
+
+val disable_live_non_parse_errors : config -> bool option
+
+val emoji : config -> bool option
 
 val enable_const_params : config -> bool
 
+val enforce_local_inference_annotations : config -> bool
+
 val enforce_strict_call_arity : config -> bool
-
-val enforce_well_formed_exports : config -> bool
-
-val enforce_well_formed_exports_includes : config -> string list
 
 val enums : config -> bool
 
-val esproposal_class_instance_fields : config -> Options.esproposal_feature_mode
-
-val esproposal_class_static_fields : config -> Options.esproposal_feature_mode
-
-val esproposal_decorators : config -> Options.esproposal_feature_mode
-
-val esproposal_export_star_as : config -> Options.esproposal_feature_mode
-
-val esproposal_nullish_coalescing : config -> Options.esproposal_feature_mode
-
-val esproposal_optional_chaining : config -> Options.esproposal_feature_mode
+val enums_with_unknown_members : config -> bool
 
 val exact_by_default : config -> bool
 
@@ -100,6 +96,24 @@ val facebook_module_interop : config -> bool
 val file_watcher : config -> file_watcher option
 
 val file_watcher_timeout : config -> int option
+
+val format_bracket_spacing : config -> bool option
+
+val format_single_quotes : config -> bool option
+
+val gc_worker_custom_major_ratio : config -> int option
+
+val gc_worker_custom_minor_max_size : config -> int option
+
+val gc_worker_custom_minor_ratio : config -> int option
+
+val gc_worker_major_heap_increment : config -> int option
+
+val gc_worker_minor_heap_size : config -> int option
+
+val gc_worker_space_overhead : config -> int option
+
+val gc_worker_window_size : config -> int option
 
 val haste_module_ref_prefix : config -> string option
 
@@ -114,6 +128,8 @@ val haste_use_name_reducers : config -> bool
 val ignore_non_literal_requires : config -> bool
 
 val include_warnings : config -> bool
+
+val indexed_access : config -> bool
 
 val lazy_mode : config -> Options.lazy_mode option
 
@@ -159,11 +175,21 @@ val required_version : config -> string option
 
 val react_runtime : config -> Options.react_runtime
 
+val react_server_component_exts : config -> SSet.t
+
 val recursion_limit : config -> int
+
+val refactor : config -> bool option
 
 val root_name : config -> string option
 
+val reorder_checking : config -> Options.order_mode
+
+val run_post_inference_implicit_instantiation : config -> bool
+
 val saved_state_fetcher : config -> Options.saved_state_fetcher
+
+val saved_state_load_sighashes : config -> bool
 
 val shm_hash_table_pow : config -> int
 
@@ -185,15 +211,13 @@ val trust_mode : config -> Options.trust_mode
 
 val type_asserts : config -> bool
 
-val types_first : config -> bool
-
-val new_signatures : config -> bool
-
 val watchman_sync_timeout : config -> int option
 
 val watchman_defer_states : config -> string list
 
 val watchman_mergebase_with : config -> string option
+
+val watchman_survive_restarts : config -> bool option
 
 val wait_for_recheck : config -> bool
 

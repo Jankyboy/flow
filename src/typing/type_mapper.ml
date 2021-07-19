@@ -26,10 +26,10 @@ let unwrap_type =
         t
       else (
         seen := ISet.add id !seen;
-        Constraint.(
-          match Context.find_graph cx id with
+        Type.Constraint.(
+          match Lazy.force (Context.find_graph cx id) with
           | Resolved (_, t')
-          | FullyResolved (_, t') ->
+          | FullyResolved (_, (lazy t')) ->
             unwrap seen cx t'
           | Unresolved _ -> t)
       )
@@ -51,10 +51,10 @@ let union_flatten =
         []
       else (
         seen := ISet.add id !seen;
-        Constraint.(
-          match Context.find_graph cx id with
+        Type.Constraint.(
+          match Lazy.force (Context.find_graph cx id) with
           | Resolved (_, t')
-          | FullyResolved (_, t') ->
+          | FullyResolved (_, (lazy t')) ->
             flatten cx seen t'
           | Unresolved _ -> [t])
       )
@@ -63,12 +63,11 @@ let union_flatten =
     | UnionT (_, rep) -> union_flatten cx seen @@ UnionRep.members rep
     | MaybeT (r, t) ->
       DefT (r, Trust.bogus_trust (), NullT)
-      :: DefT (r, Trust.bogus_trust (), VoidT)
-      :: flatten cx seen t
+      :: DefT (r, Trust.bogus_trust (), VoidT) :: flatten cx seen t
     | OptionalT { reason = r; type_ = t; use_desc } ->
       let void_t = VoidT.why_with_use_desc ~use_desc r |> with_trust Trust.bogus_trust in
       void_t :: flatten cx seen t
-    | DefT (_, _, EmptyT _) -> []
+    | DefT (_, _, EmptyT) -> []
     | _ -> [t]
   in
   (fun cx ts -> union_flatten cx (ref ISet.empty) ts)
@@ -104,12 +103,12 @@ class virtual ['a] t =
           EvalT (t'', dt', id')
       | BoundT _ -> t
       | ExistsT _ -> t
-      | ThisClassT (r, t') ->
+      | ThisClassT (r, t', i) ->
         let t'' = self#type_ cx map_cx t' in
         if t'' == t' then
           t
         else
-          ThisClassT (r, t'')
+          ThisClassT (r, t'', i)
       | ThisTypeAppT (r, t1, t2, tlist_opt) ->
         let t1' = self#type_ cx map_cx t1 in
         let t2' = self#type_ cx map_cx t2 in
@@ -140,12 +139,12 @@ class virtual ['a] t =
       | FunProtoBindT _
       | FunProtoCallT _ ->
         t
-      | MergedT (r, uses) ->
-        let uses' = ListUtils.ident_map (self#use_type cx map_cx) uses in
-        if uses == uses' then
+      | GenericT ({ bound; _ } as generic) ->
+        let bound' = self#type_ cx map_cx bound in
+        if bound' == bound then
           t
         else
-          MergedT (r, uses')
+          GenericT { generic with bound = bound' }
       | ShapeT (r, t') ->
         let t'' = self#type_ cx map_cx t' in
         if t'' == t' then
@@ -272,7 +271,7 @@ class virtual ['a] t =
       else
         (r, tvar')
 
-    method virtual tvar : Context.t -> 'a -> Reason.t -> Constraint.ident -> Constraint.ident
+    method virtual tvar : Context.t -> 'a -> Reason.t -> Type.ident -> Type.ident
 
     method targ cx map_cx t =
       match t with
@@ -285,19 +284,19 @@ class virtual ['a] t =
           ExplicitArg t''
 
     method enum cx map_cx e =
-      let { enum_id; enum_name; members; representation_t } = e in
+      let { enum_id; members; representation_t; has_unknown_members } = e in
       let representation_t' = self#type_ cx map_cx representation_t in
       if representation_t' = representation_t then
         e
       else
-        { enum_id; enum_name; members; representation_t = representation_t' }
+        { enum_id; members; representation_t = representation_t'; has_unknown_members }
 
     method def_type cx map_cx t =
       match t with
       | NumT _
       | StrT _
       | BoolT _
-      | EmptyT _
+      | EmptyT
       | MixedT _
       | SymbolT
       | NullT
@@ -409,9 +408,9 @@ class virtual ['a] t =
     method fun_type
         cx
         map_cx
-        ( { this_t; params; rest_param; return_t; closure_t; is_predicate; changeset; def_reason }
-        as t ) =
-      let this_t' = self#type_ cx map_cx this_t in
+        ({ this_t = (this, subtyping); params; rest_param; return_t; is_predicate; def_reason } as
+        t) =
+      let this' = self#type_ cx map_cx this in
       let params' =
         ListUtils.ident_map
           (fun ((name, t) as param) ->
@@ -433,16 +432,15 @@ class virtual ['a] t =
             Some (name, loc, t')
       in
       let return_t' = self#type_ cx map_cx return_t in
-      if
-        this_t' == this_t && return_t' == return_t && params' == params && rest_param' == rest_param
+      if this' == this && return_t' == return_t && params' == params && rest_param' == rest_param
       then
         t
       else
-        let this_t = this_t' in
+        let this_t = (this', subtyping) in
         let return_t = return_t' in
         let params = params' in
         let rest_param = rest_param' in
-        { this_t; params; rest_param; return_t; closure_t; is_predicate; changeset; def_reason }
+        { this_t; params; rest_param; return_t; is_predicate; def_reason }
 
     method inst_type cx map_cx i =
       let {
@@ -492,7 +490,7 @@ class virtual ['a] t =
           inst_kind;
         }
 
-    method type_param cx map_cx ({ reason; name; bound; polarity; default } as t) =
+    method type_param cx map_cx ({ reason; name; bound; polarity; default; is_this } as t) =
       let bound' = self#type_ cx map_cx bound in
       let default' = OptionUtils.ident_map (self#type_ cx map_cx) default in
       if bound == bound' && default == default' then
@@ -500,7 +498,7 @@ class virtual ['a] t =
       else
         let bound = bound' in
         let default = default' in
-        { reason; name; bound; polarity; default }
+        { reason; name; bound; polarity; default; is_this }
 
     method selector cx map_cx t =
       match t with
@@ -519,14 +517,22 @@ class virtual ['a] t =
     method destructor cx map_cx t =
       match t with
       | NonMaybeType
-      | PropertyType _ ->
+      | PropertyType _
+      | OptionalIndexedAccessResultType _
+      | OptionalIndexedAccessNonMaybeType { index = OptionalIndexedAccessStrLitIndex _ } ->
         t
-      | ElementType t' ->
-        let t'' = self#type_ cx map_cx t' in
-        if t'' == t' then
+      | ElementType { index_type; is_indexed_access } ->
+        let index_type' = self#type_ cx map_cx index_type in
+        if index_type' == index_type then
           t
         else
-          ElementType t''
+          ElementType { index_type = index_type'; is_indexed_access }
+      | OptionalIndexedAccessNonMaybeType { index = OptionalIndexedAccessTypeIndex index_type } ->
+        let index_type' = self#type_ cx map_cx index_type in
+        if index_type' == index_type then
+          t
+        else
+          OptionalIndexedAccessNonMaybeType { index = OptionalIndexedAccessTypeIndex index_type' }
       | Bind t' ->
         let t'' = self#type_ cx map_cx t' in
         if t'' == t' then
@@ -572,13 +578,15 @@ class virtual ['a] t =
         t
 
     method object_kit_spread_operand_slice
-        cx map_cx ({ Object.Spread.reason; prop_map; dict } as slice) =
-      let prop_map' = SMap.ident_map (Property.ident_map_t (self#type_ cx map_cx)) prop_map in
+        cx map_cx ({ Object.Spread.reason; prop_map; dict; generics } as slice) =
+      let prop_map' =
+        NameUtils.Map.ident_map (Property.ident_map_t (self#type_ cx map_cx)) prop_map
+      in
       let dict' = OptionUtils.ident_map (self#dict_type cx map_cx) dict in
       if prop_map' == prop_map && dict' == dict then
         slice
       else
-        { Object.Spread.reason; prop_map = prop_map'; dict = dict' }
+        { Object.Spread.reason; prop_map = prop_map'; dict = dict'; generics }
 
     method object_kit_spread_operand cx map_cx operand =
       Object.Spread.(
@@ -692,10 +700,20 @@ class virtual ['a] t =
           ROArrayAT t''
 
     method bounds cx map_cx t =
-      Constraint.(
+      Type.Constraint.(
         let lower' = TypeMap.ident_map_key (self#type_ cx map_cx) t.lower in
         if lower' != t.lower then t.lower <- lower';
-        let upper' = UseTypeMap.ident_map_key (self#use_type cx map_cx) t.upper in
+        let upper' =
+          UseTypeMap.ident_map_key
+            (fun u ->
+              let (t, speculation) = u in
+              let t' = self#use_type cx map_cx t in
+              if t == t' then
+                u
+              else
+                (t', speculation))
+            t.upper
+        in
         if upper' != t.upper then t.upper <- upper';
         t)
 
@@ -956,9 +974,9 @@ class virtual ['a] t_with_uses =
         else
           ConstructorT (op, r, targs', args', t'')
       | SuperT (op, r, Derived { own = o; proto = p; static = s }) ->
-        let o' = SMap.ident_map (Property.ident_map_t (self#type_ cx map_cx)) o in
-        let p' = SMap.ident_map (Property.ident_map_t (self#type_ cx map_cx)) p in
-        let s' = SMap.ident_map (Property.ident_map_t (self#type_ cx map_cx)) s in
+        let o' = NameUtils.Map.ident_map (Property.ident_map_t (self#type_ cx map_cx)) o in
+        let p' = NameUtils.Map.ident_map (Property.ident_map_t (self#type_ cx map_cx)) p in
+        let s' = NameUtils.Map.ident_map (Property.ident_map_t (self#type_ cx map_cx)) s in
         if o' == o && p' == p && s' == s then
           t
         else
@@ -1003,7 +1021,8 @@ class virtual ['a] t_with_uses =
       | AssertArithmeticOperandT _
       | AssertBinaryInLHST _
       | AssertBinaryInRHST _
-      | AssertForInRHST _ ->
+      | AssertForInRHST _
+      | AssertInstanceofRHST _ ->
         t
       | AssertIterableT { use_op; reason; async; targs } ->
         let targs' = ListUtils.ident_map (self#type_ cx map_cx) targs in
@@ -1192,6 +1211,7 @@ class virtual ['a] t_with_uses =
             ts = tlist;
             propref = prop;
             lookup_action = action;
+            method_accessible;
             ids;
           } ->
         let lookup' = self#lookup_kind cx map_cx lookup in
@@ -1208,6 +1228,7 @@ class virtual ['a] t_with_uses =
               ts = tlist';
               propref = prop';
               lookup_action = action';
+              method_accessible;
               ids;
             }
       | ObjAssignToT (op, r, t1, t2, obj_assign) ->
@@ -1224,18 +1245,12 @@ class virtual ['a] t_with_uses =
           t
         else
           ObjAssignFromT (op, r, t1', t2', obj_assign)
-      | ObjFreezeT (r, t') ->
+      | ObjRestT (r, strings, t', id) ->
         let t'' = self#type_ cx map_cx t' in
         if t'' == t' then
           t
         else
-          ObjFreezeT (r, t'')
-      | ObjRestT (r, strings, t') ->
-        let t'' = self#type_ cx map_cx t' in
-        if t'' == t' then
-          t
-        else
-          ObjRestT (r, strings, t'')
+          ObjRestT (r, strings, t'', id)
       | ObjSealT (r, t') ->
         let t'' = self#type_ cx map_cx t' in
         if t'' == t' then
@@ -1268,19 +1283,24 @@ class virtual ['a] t_with_uses =
           t
         else
           UnifyT (t1', t2')
-      | BecomeT (r, t') ->
+      | BecomeT { reason; t = t'; empty_success } ->
         let t'' = self#type_ cx map_cx t' in
         if t'' == t' then
           t
         else
-          BecomeT (r, t'')
+          BecomeT { reason; empty_success; t = t'' }
       | GetKeysT (r, t') ->
         let t'' = self#use_type cx map_cx t' in
         if t'' == t' then
           t
         else
           GetKeysT (r, t'')
-      | HasOwnPropT _ -> t
+      | HasOwnPropT (op, r, t') ->
+        let t'' = self#type_ cx map_cx t' in
+        if t'' == t' then
+          t
+        else
+          HasOwnPropT (op, r, t')
       | GetValuesT (r, t') ->
         let t'' = self#type_ cx map_cx t' in
         if t'' == t' then
@@ -1312,6 +1332,12 @@ class virtual ['a] t_with_uses =
           t
         else
           MakeExactT (r, cont')
+      | SealGenericT ({ cont; _ } as generic) ->
+        let cont' = self#cont cx map_cx cont in
+        if cont' == cont then
+          t
+        else
+          SealGenericT { generic with cont = cont' }
       | CJSRequireT (r, t', is_strict) ->
         let t'' = self#type_ cx map_cx t' in
         if t'' == t' then
@@ -1378,7 +1404,7 @@ class virtual ['a] t_with_uses =
           else
             (loc, t')
         in
-        let tmap' = SMap.ident_map map_loc_type_pair tmap in
+        let tmap' = NameUtils.Map.ident_map map_loc_type_pair tmap in
         let t'' = self#type_ cx map_cx t' in
         if tmap' == tmap && t'' == t' then
           t
@@ -1451,14 +1477,31 @@ class virtual ['a] t_with_uses =
           t
         else
           IdxUnMaybeifyT (r, t'')
-      | OptionalChainT (r1, r2, this, t_out, void_out) ->
-        let this' = self#type_ cx map_cx this in
+      | OptionalChainT { reason; lhs_reason; this_t; t_out; voided_out } ->
+        let this_t' = self#type_ cx map_cx this_t in
         let t_out' = self#use_type cx map_cx t_out in
-        let void_out' = self#type_ cx map_cx void_out in
-        if t_out' == t_out && void_out' == void_out && this' == this then
+        let voided_out' = self#type_ cx map_cx voided_out in
+        if t_out' == t_out && voided_out' == voided_out && this_t' == this_t then
           t
         else
-          OptionalChainT (r1, r2, this', t_out', void_out')
+          OptionalChainT
+            { reason; lhs_reason; this_t = this_t'; t_out = t_out'; voided_out = voided_out' }
+      | OptionalIndexedAccessT { use_op; reason; index; tout_tvar } ->
+        let tout_tvar' = self#tout cx map_cx tout_tvar in
+        let index' =
+          match index with
+          | OptionalIndexedAccessStrLitIndex _ -> index
+          | OptionalIndexedAccessTypeIndex index_type ->
+            let index_type' = self#type_ cx map_cx index_type in
+            if index_type' == index_type then
+              index
+            else
+              OptionalIndexedAccessTypeIndex index_type'
+        in
+        if index' == index && tout_tvar' == tout_tvar then
+          t
+        else
+          OptionalIndexedAccessT { use_op; reason; index = index'; tout_tvar = tout_tvar' }
       | InvariantT _ -> t
       | CallLatentPredT (r, b, i, t1, t2) ->
         let t1' = self#type_ cx map_cx t1 in
@@ -1509,20 +1552,13 @@ class virtual ['a] t_with_uses =
           t
         else
           ExtendsUseT (use_op, r, tlist', t1', t2')
-      | ModuleExportsAssignT (r, t', t_out) ->
-        let t'' = self#type_ cx map_cx t' in
-        let t_out' = self#type_ cx map_cx t_out in
-        if t' == t'' && t_out == t_out' then
-          t
-        else
-          ModuleExportsAssignT (r, t'', t_out')
-      | DestructuringT (r, k, s, t') ->
+      | DestructuringT (r, k, s, t', id) ->
         let s' = self#selector cx map_cx s in
         let t'' = self#tout cx map_cx t' in
         if s' == s && t'' == t' then
           t
         else
-          DestructuringT (r, k, s', t'')
+          DestructuringT (r, k, s', t'', id)
       | CreateObjWithComputedPropT { reason; value; tout_tvar } ->
         let value' = self#type_ cx map_cx value in
         let tout_tvar' = self#tout cx map_cx tout_tvar in
@@ -1588,14 +1624,35 @@ class virtual ['a] t_with_uses =
         else
           OptCallElemT (r1, r2, t'', action')
 
-    method private opt_fun_call_type cx map_cx ((this, targs, args, clos, strict) as t) =
+    method private opt_fun_call_type cx map_cx ((this, targs, args, strict) as t) =
       let this' = self#type_ cx map_cx this in
       let targs' = OptionUtils.ident_map (ListUtils.ident_map (self#targ cx map_cx)) targs in
       let args' = ListUtils.ident_map (self#call_arg cx map_cx) args in
       if this' == this && targs' == targs && args' == args then
         t
       else
-        (this', targs', args', clos, strict)
+        (this', targs', args', strict)
+
+    method private opt_meth_call_type
+        cx
+        map_cx
+        ({ opt_meth_generic_this; opt_meth_targs; opt_meth_args_tlist; opt_meth_strict_arity } as t)
+        =
+      let this' = OptionUtils.ident_map (self#type_ cx map_cx) opt_meth_generic_this in
+      let targs' =
+        OptionUtils.ident_map (ListUtils.ident_map (self#targ cx map_cx)) opt_meth_targs
+      in
+      let args' = ListUtils.ident_map (self#call_arg cx map_cx) opt_meth_args_tlist in
+      if this' == opt_meth_generic_this && targs' == opt_meth_targs && args' == opt_meth_args_tlist
+      then
+        t
+      else
+        {
+          opt_meth_generic_this = this';
+          opt_meth_targs = targs';
+          opt_meth_args_tlist = args';
+          opt_meth_strict_arity;
+        }
 
     method prop_ref cx map_cx t =
       match t with
@@ -1709,14 +1766,14 @@ class virtual ['a] t_with_uses =
     method private opt_method_action cx map_cx t =
       match t with
       | OptCallM funtype ->
-        let funtype' = self#opt_fun_call_type cx map_cx funtype in
+        let funtype' = self#opt_meth_call_type cx map_cx funtype in
         if funtype' == funtype then
           t
         else
           OptCallM funtype'
       | OptChainM (r, lhs_r, this, funtype, void_out) ->
         let this' = self#type_ cx map_cx this in
-        let funtype' = self#opt_fun_call_type cx map_cx funtype in
+        let funtype' = self#opt_meth_call_type cx map_cx funtype in
         let void_out' = self#type_ cx map_cx void_out in
         if funtype' == funtype && void_out' == void_out && this' == this then
           t
@@ -1726,14 +1783,14 @@ class virtual ['a] t_with_uses =
     method method_action cx map_cx t =
       match t with
       | CallM funtype ->
-        let funtype' = self#fun_call_type cx map_cx funtype in
+        let funtype' = self#method_call_type cx map_cx funtype in
         if funtype' == funtype then
           t
         else
           CallM funtype'
       | ChainM (r, lhs_r, this, funtype, void_out) ->
         let this' = self#type_ cx map_cx this in
-        let funtype' = self#fun_call_type cx map_cx funtype in
+        let funtype' = self#method_call_type cx map_cx funtype in
         let void_out' = self#type_ cx map_cx void_out in
         if funtype' == funtype && void_out' == void_out && this' == this then
           t
@@ -1741,10 +1798,7 @@ class virtual ['a] t_with_uses =
           ChainM (r, lhs_r, this', funtype', void_out')
 
     method fun_call_type cx map_cx t =
-      let { call_this_t; call_targs; call_args_tlist; call_tout; call_closure_t; call_strict_arity }
-          =
-        t
-      in
+      let { call_this_t; call_targs; call_args_tlist; call_tout; call_strict_arity } = t in
       let call_this_t' = self#type_ cx map_cx call_this_t in
       let call_targs' =
         OptionUtils.ident_map (ListUtils.ident_map (self#targ cx map_cx)) call_targs
@@ -1764,8 +1818,31 @@ class virtual ['a] t_with_uses =
           call_targs = call_targs';
           call_args_tlist = call_args_tlist';
           call_tout = call_tout';
-          call_closure_t;
           call_strict_arity;
+        }
+
+    method method_call_type cx map_cx t =
+      let { meth_generic_this; meth_targs; meth_args_tlist; meth_tout; meth_strict_arity } = t in
+      let this' = OptionUtils.ident_map (self#type_ cx map_cx) meth_generic_this in
+      let meth_targs' =
+        OptionUtils.ident_map (ListUtils.ident_map (self#targ cx map_cx)) meth_targs
+      in
+      let meth_args_tlist' = ListUtils.ident_map (self#call_arg cx map_cx) meth_args_tlist in
+      let meth_tout' = self#tout cx map_cx meth_tout in
+      if
+        this' == meth_generic_this
+        && meth_targs' == meth_targs
+        && meth_args_tlist' == meth_args_tlist
+        && meth_tout' == meth_tout
+      then
+        t
+      else
+        {
+          meth_generic_this = this';
+          meth_targs = meth_targs';
+          meth_args_tlist = meth_args_tlist';
+          meth_tout = meth_tout';
+          meth_strict_arity;
         }
 
     method call_arg cx map_cx t =
@@ -1946,6 +2023,15 @@ class virtual ['a] t_with_uses =
           else
             CreateClass (tool', knot', t''))
 
+    method private instance_slice cx map_cx t =
+      let (st, instt) = t in
+      let st' = self#type_ cx map_cx st in
+      let instt' = self#inst_type cx map_cx instt in
+      if st' == st && instt' == instt then
+        t
+      else
+        (st', instt')
+
     method object_kit_resolve_tool cx map_cx t =
       Object.(
         match t with
@@ -1955,14 +2041,19 @@ class virtual ['a] t_with_uses =
             t
           else
             Resolve r'
-        | Super ({ Object.reason; props; flags }, r) ->
+        | Super ({ Object.reason; props; flags; generics; interface }, r) ->
           let flags' = self#obj_flags cx map_cx flags in
-          let props' = SMap.ident_map (fun (t, b) -> (self#type_ cx map_cx t, b)) props in
+          let props' =
+            NameUtils.Map.ident_map (fun (t, b1, b2) -> (self#type_ cx map_cx t, b1, b2)) props
+          in
+          let interface' = OptionUtils.ident_map (self#instance_slice cx map_cx) interface in
           let r' = self#resolve cx map_cx r in
-          if flags' == flags && r' == r && props' == props then
+          if flags' == flags && r' == r && props' == props && interface == interface' then
             t
           else
-            Super ({ reason; Object.props = props'; flags = flags' }, r'))
+            Super
+              ( { reason; Object.props = props'; flags = flags'; generics; interface = interface' },
+                r' ))
 
     method object_kit_tool cx map_cx tool =
       Object.(
@@ -2144,28 +2235,28 @@ class virtual ['a] t_with_uses =
 
     method resolved_param cx map_cx t =
       match t with
-      | ResolvedArg t' ->
+      | ResolvedArg (t', g) ->
         let t'' = self#type_ cx map_cx t' in
         if t'' == t' then
           t
         else
-          ResolvedArg t''
-      | ResolvedSpreadArg (r, arrtype) ->
+          ResolvedArg (t'', g)
+      | ResolvedSpreadArg (r, arrtype, g) ->
         let arrtype' = self#arr_type cx map_cx arrtype in
         if arrtype' == arrtype then
           t
         else
-          ResolvedSpreadArg (r, arrtype')
+          ResolvedSpreadArg (r, arrtype', g)
       | ResolvedAnySpreadArg _ -> t
 
     method unresolved_param cx map_cx t =
       match t with
-      | UnresolvedArg t' ->
+      | UnresolvedArg (t', g) ->
         let t'' = self#type_ cx map_cx t' in
         if t'' == t' then
           t
         else
-          UnresolvedArg t''
+          UnresolvedArg (t'', g)
       | UnresolvedSpreadArg t' ->
         let t'' = self#type_ cx map_cx t' in
         if t'' == t' then
@@ -2191,14 +2282,18 @@ class virtual ['a] t_with_uses =
         | ResolveObject -> t
         | ResolveDict (dict, props, obj) ->
           let dict' = self#dict_type cx map_cx dict in
-          let props' = SMap.ident_map (Property.ident_map_t (self#type_ cx map_cx)) props in
+          let props' =
+            NameUtils.Map.ident_map (Property.ident_map_t (self#type_ cx map_cx)) props
+          in
           let obj' = self#resolved_object cx map_cx obj in
           if dict' == dict && props' == props && obj' == obj then
             t
           else
             ResolveDict (dict', props', obj')
         | ResolveProp (s, props, obj) ->
-          let props' = SMap.ident_map (Property.ident_map_t (self#type_ cx map_cx)) props in
+          let props' =
+            NameUtils.Map.ident_map (Property.ident_map_t (self#type_ cx map_cx)) props
+          in
           let obj' = self#resolved_object cx map_cx obj in
           if props' == props && obj' == obj then
             t
@@ -2239,20 +2334,22 @@ class virtual ['a] t_with_uses =
           else
             List (tlist', resolvednelist', join))
 
-    method resolved_prop cx map_cx ((t, own) as prop) =
+    method resolved_prop cx map_cx ((t, own, meth) as prop) =
       let t' = self#type_ cx map_cx t in
       if t' == t then
         prop
       else
-        (t', own)
+        (t', own, meth)
 
-    method object_kit_slice cx map_cx ({ Object.reason = _; props; flags } as slice) =
-      let props' = SMap.ident_map (self#resolved_prop cx map_cx) props in
+    method object_kit_slice
+        cx map_cx ({ Object.reason = _; props; flags; generics = _; interface } as slice) =
+      let props' = NameUtils.Map.ident_map (self#resolved_prop cx map_cx) props in
       let flags' = self#obj_flags cx map_cx flags in
-      if props' == props && flags' == flags then
+      let interface' = OptionUtils.ident_map (self#instance_slice cx map_cx) interface in
+      if props' == props && flags' == flags && interface' == interface then
         slice
       else
-        { slice with Object.props = props'; flags = flags' }
+        { slice with Object.props = props'; flags = flags'; interface = interface' }
 
     method object_kit_acc_element cx map_cx el =
       Object.Spread.(
@@ -2349,7 +2446,7 @@ class virtual ['a] t_with_uses =
 
     method resolved_object cx map_cx ((r, props, flags) as t) =
       let flags' = self#obj_flags cx map_cx flags in
-      let props' = SMap.ident_map (Property.ident_map_t (self#type_ cx map_cx)) props in
+      let props' = NameUtils.Map.ident_map (Property.ident_map_t (self#type_ cx map_cx)) props in
       if flags' == flags && props' == props then
         t
       else

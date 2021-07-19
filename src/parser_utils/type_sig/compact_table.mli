@@ -84,6 +84,8 @@ module Make () : sig
 
   val splice : 'a node -> ('a builder -> 'b) -> 'b
 
+  val value : 'a node -> 'a
+
   val modify : 'a node -> ('a -> 'a) -> unit
 
   (* If this node has already been marked, does nothing. Otherwise calls the
@@ -114,17 +116,17 @@ module Make () : sig
 
   val to_array : 'a t -> 'a array
 
-  val heap_size : ('a -> Type_sig_heap.size) -> 'a t -> Type_sig_heap.size
+  val to_array_map : ('a -> 'b) -> 'a t -> 'b array
 
-  val to_heap :
-    (Type_sig_heap.chunk -> 'a -> 'k Type_sig_heap.addr) ->
-    Type_sig_heap.chunk ->
-    'a t ->
-    'k Type_sig_heap.addr_map Type_sig_heap.addr
+  module IndexSet : Set.S with type elt = index
 
-  val from_heap :
-    (Type_sig_heap.heap -> 'k Type_sig_heap.addr -> 'a) ->
-    Type_sig_heap.heap ->
-    'k Type_sig_heap.addr_map Type_sig_heap.addr ->
-    'a t
+  module Interned : sig
+    type 'a builder
+
+    val create : unit -> 'a builder
+
+    val push : 'a builder -> 'a -> 'a node
+
+    val compact : 'a builder -> 'a indexed
+  end
 end

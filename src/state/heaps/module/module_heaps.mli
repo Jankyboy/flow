@@ -16,9 +16,8 @@ val mk_resolved_requires :
 
 type info = {
   module_name: Modulename.t;
-  checked: bool;
-  (* in flow? *)
-  parsed: bool; (* if false, it's a tracking record only *)
+  checked: bool;  (** in flow? *)
+  parsed: bool;  (** if false, it's a tracking record only *)
 }
 
 module type READER = sig
@@ -32,19 +31,19 @@ module type READER = sig
 
   val get_resolved_requires_unsafe : reader:reader -> (File_key.t -> resolved_requires) Expensive.t
 
-  (* given a filename, returns module info *)
+  (** given a filename, returns module info *)
   val get_info_unsafe : reader:reader -> (File_key.t -> info) Expensive.t
 
   val get_info : reader:reader -> (File_key.t -> info option) Expensive.t
 
   val is_tracked_file : reader:reader -> File_key.t -> bool
-
-  val get_package : reader:reader -> string -> (Package_json.t, unit) result option
-
-  val get_package_directory : reader:reader -> string -> string option
 end
 
-module Mutator_reader : READER with type reader = Mutator_state_reader.t
+module Mutator_reader : sig
+  include READER with type reader = Mutator_state_reader.t
+
+  val get_old_info : reader:reader -> (File_key.t -> info option) Expensive.t
+end
 
 module Reader : READER with type reader = State_reader.t
 
@@ -79,16 +78,6 @@ module Introduce_files_mutator : sig
   val add_info : t -> File_key.t -> info -> unit
 end
 
-module Package_heap_mutator : sig
-  val add_package_json : string -> Package_json.t -> unit
-
-  val add_error : string -> unit
-end
-
 module From_saved_state : sig
   val add_resolved_requires : File_key.t -> resolved_requires -> unit
-end
-
-module For_saved_state : sig
-  val get_package_json_unsafe : string -> (Package_json.t, unit) result
 end

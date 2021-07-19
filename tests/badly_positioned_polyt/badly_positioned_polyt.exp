@@ -1,36 +1,36 @@
 Error ---------------------------------------------------------------------------------------------- concretize.js:10:16
 
 Cannot create `C1` element because `EventTarget` [1] is incompatible with `C1` [2] in type argument `T` [3] of the first
-argument of property `onKeyDown`. [incompatible-type-arg]
+parameter of property `onKeyDown`. [incompatible-type-arg]
 
    concretize.js:10:16
    10| <C1 onKeyDown={_onKeyDown} />;
                       ^^^^^^^^^^
 
 References:
-   <BUILTINS>/react-dom.js:75:21
-   75|   +T: EventTarget = EventTarget,
+   <BUILTINS>/react-dom.js:76:21
+   76|   +T: EventTarget = EventTarget,
                            ^^^^^^^^^^^ [1]
    concretize.js:9:47
     9| function _onKeyDown(e: SyntheticKeyboardEvent<C1>): void {};
                                                      ^^ [2]
-   <BUILTINS>/react-dom.js:75:4
-   75|   +T: EventTarget = EventTarget,
+   <BUILTINS>/react-dom.js:76:4
+   76|   +T: EventTarget = EventTarget,
           ^ [3]
 
 
 Error ---------------------------------------------------------------------------------------------- concretize.js:10:16
 
 Cannot create `C1` element because `EventTarget` [1] is incompatible with `C1` [2] in type argument `T` of the first
-argument of property `onKeyDown`. [incompatible-type-arg]
+parameter of property `onKeyDown`. [incompatible-type-arg]
 
    concretize.js:10:16
    10| <C1 onKeyDown={_onKeyDown} />;
                       ^^^^^^^^^^
 
 References:
-   <BUILTINS>/react-dom.js:75:7
-   75|   +T: EventTarget = EventTarget,
+   <BUILTINS>/react-dom.js:76:7
+   76|   +T: EventTarget = EventTarget,
              ^^^^^^^^^^^ [1]
    concretize.js:9:47
     9| function _onKeyDown(e: SyntheticKeyboardEvent<C1>): void {};

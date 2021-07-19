@@ -16,7 +16,7 @@ References:
 Error ----------------------------------------------------------------------------------------------------- api.js:11:24
 
 Cannot call `Children.map` with function bound to `fn` because string [1] is incompatible with number [2] in the first
-argument. [incompatible-call]
+parameter. [incompatible-call]
 
    api.js:11:24
    11| na(Children.map(a, (x: string) => (x: string))); // Error
@@ -59,8 +59,8 @@ References:
    api.js:14:25
     14| Children.forEach(a, (x: number) => {}); // Error
                                 ^^^^^^ [2]
-   <BUILTINS>/react.js:284:38
-   284|   declare export type ChildrenArray<+T> = $ReadOnlyArray<ChildrenArray<T>> | T;
+   <BUILTINS>/react.js:304:38
+   304|   declare export type ChildrenArray<+T> = $ReadOnlyArray<ChildrenArray<T>> | T;
                                              ^ [3]
 
 
@@ -80,8 +80,8 @@ References:
    api.js:16:25
     16| Children.forEach(a, (x: string) => {}); // Error
                                 ^^^^^^ [2]
-   <BUILTINS>/react.js:284:38
-   284|   declare export type ChildrenArray<+T> = $ReadOnlyArray<ChildrenArray<T>> | T;
+   <BUILTINS>/react.js:304:38
+   304|   declare export type ChildrenArray<+T> = $ReadOnlyArray<ChildrenArray<T>> | T;
                                              ^ [3]
 
 
@@ -101,8 +101,8 @@ References:
    api.js:16:25
     16| Children.forEach(a, (x: string) => {}); // Error
                                 ^^^^^^ [2]
-   <BUILTINS>/react.js:284:38
-   284|   declare export type ChildrenArray<+T> = $ReadOnlyArray<ChildrenArray<T>> | T;
+   <BUILTINS>/react.js:304:38
+   304|   declare export type ChildrenArray<+T> = $ReadOnlyArray<ChildrenArray<T>> | T;
                                              ^ [3]
 
 
@@ -116,8 +116,8 @@ Cannot call `s` with `Children.count(...)` bound to `x` because number [1] is in
           ^^^^^^^^^^^^^^^^^
 
 References:
-   <BUILTINS>/react.js:296:42
-   296|     count(children: ChildrenArray<any>): number,
+   <BUILTINS>/react.js:316:42
+   316|     count(children: ChildrenArray<any>): number,
                                                  ^^^^^^ [1]
    api.js:29:15
     29| function s(x: string) {}
@@ -172,14 +172,14 @@ Cannot create `builtin` element because in property `children`: [incompatible-ty
           ^^^^^^^^^^^^^^^^^^ [2]
 
 References:
-   <BUILTINS>/react.js:18:5
-   18|   | React$Element<any>
-           ^^^^^^^^^^^^^^^^^^ [1]
-   <BUILTINS>/react.js:19:5
-   19|   | React$Portal
-           ^^^^^^^^^^^^ [3]
    <BUILTINS>/react.js:20:5
-   20|   | Iterable<?React$Node>;
+   20|   | React$Element<any>
+           ^^^^^^^^^^^^^^^^^^ [1]
+   <BUILTINS>/react.js:21:5
+   21|   | React$Portal
+           ^^^^^^^^^^^^ [3]
+   <BUILTINS>/react.js:22:5
+   22|   | Iterable<?React$Node>;
            ^^^^^^^^^^^^^^^^^^^^^ [4]
 
 
@@ -249,14 +249,14 @@ Cannot create `MyComponent` element because in property `children`: [incompatibl
           ^^^^^^^^^^^^^^^^^^ [2]
 
 References:
-   <BUILTINS>/react.js:18:5
-   18|   | React$Element<any>
-           ^^^^^^^^^^^^^^^^^^ [1]
-   <BUILTINS>/react.js:19:5
-   19|   | React$Portal
-           ^^^^^^^^^^^^ [3]
    <BUILTINS>/react.js:20:5
-   20|   | Iterable<?React$Node>;
+   20|   | React$Element<any>
+           ^^^^^^^^^^^^^^^^^^ [1]
+   <BUILTINS>/react.js:21:5
+   21|   | React$Portal
+           ^^^^^^^^^^^^ [3]
+   <BUILTINS>/react.js:22:5
+   22|   | Iterable<?React$Node>;
            ^^^^^^^^^^^^^^^^^^^^^ [4]
 
 
@@ -1366,9 +1366,8 @@ References:
 
 Error ---------------------------------------------------------------------------------------------------- text.js:52:14
 
-Cannot create `TextLiteral` element because in property `children`: [incompatible-type]
- - Either children array [1] is incompatible with string literal `foo` [2].
- - Or children array [1] is incompatible with string literal `bar` [3].
+Cannot create `TextLiteral` element because children array [1] is incompatible with literal union [2] in property
+`children`. [incompatible-type]
 
    text.js:52:14
    52| <TextLiteral>{'foo'}  </TextLiteral>; // Error: Spaces are not trimmed.
@@ -1377,17 +1376,13 @@ Cannot create `TextLiteral` element because in property `children`: [incompatibl
 References:
    text.js:7:54
     7| class TextLiteral extends React.Component<{children: 'foo' | 'bar'}, void> {}
-                                                            ^^^^^ [2]
-   text.js:7:62
-    7| class TextLiteral extends React.Component<{children: 'foo' | 'bar'}, void> {}
-                                                                    ^^^^^ [3]
+                                                            ^^^^^^^^^^^^^ [2]
 
 
 Error ---------------------------------------------------------------------------------------------------- text.js:53:14
 
-Cannot create `TextLiteral` element because in property `children`: [incompatible-type]
- - Either children array [1] is incompatible with string literal `foo` [2].
- - Or children array [1] is incompatible with string literal `bar` [3].
+Cannot create `TextLiteral` element because children array [1] is incompatible with literal union [2] in property
+`children`. [incompatible-type]
 
    text.js:53:14
    53| <TextLiteral>  {'foo'}</TextLiteral>; // Error: Spaces are not trimmed.
@@ -1396,10 +1391,7 @@ Cannot create `TextLiteral` element because in property `children`: [incompatibl
 References:
    text.js:7:54
     7| class TextLiteral extends React.Component<{children: 'foo' | 'bar'}, void> {}
-                                                            ^^^^^ [2]
-   text.js:7:62
-    7| class TextLiteral extends React.Component<{children: 'foo' | 'bar'}, void> {}
-                                                                    ^^^^^ [3]
+                                                            ^^^^^^^^^^^^^ [2]
 
 
 Error ----------------------------------------------------------------------------------------------------- tuple.js:9:2

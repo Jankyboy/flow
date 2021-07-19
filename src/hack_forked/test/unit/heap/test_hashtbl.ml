@@ -5,21 +5,14 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-type key = OpaqueDigest.t
+module TestHeap =
+  SharedMem.NoCache
+    (StringKey)
+    (struct
+      type t = string
 
-external hh_add : key -> string -> unit = "hh_add"
-
-external hh_mem : key -> bool = "hh_mem"
-
-external hh_remove : key -> unit = "hh_remove"
-
-external hh_move : key -> key -> unit = "hh_move"
-
-external hh_get : key -> string = "hh_get_and_deserialize"
-
-external hh_collect : unit -> unit = "hh_collect"
-
-external heap_size : unit -> int = "hh_used_heap_size"
+      let description = "test"
+    end)
 
 let expect ~msg bool =
   if bool then
@@ -29,21 +22,21 @@ let expect ~msg bool =
     exit 1
   )
 
-let to_key = OpaqueDigest.string
+let add = TestHeap.add
 
-let add key value = hh_add (to_key key) value
+let get = TestHeap.get
 
-let mem key = hh_mem (to_key key)
+let mem = TestHeap.mem
 
-let remove key = hh_remove (to_key key)
+let mem_old = TestHeap.mem_old
 
-let move k1 k2 = hh_move (to_key k1) (to_key k2)
+let oldify k = TestHeap.oldify_batch (SSet.singleton k)
 
-let get key = hh_get (to_key key)
+let revive k = TestHeap.revive_batch (SSet.singleton k)
 
-let gentle_collect () = if SharedMem.should_collect `gentle then hh_collect ()
+let remove k = TestHeap.remove_batch (SSet.singleton k)
 
-let aggressive_collect () = if SharedMem.should_collect `aggressive then hh_collect ()
+let remove_old k = TestHeap.remove_old_batch (SSet.singleton k)
 
 let expect_equals ~name value expected =
   expect
@@ -59,9 +52,18 @@ let expect_stats ~nonempty ~used =
     expect_equals ~name:"slots" slots expected.slots)
 
 let expect_heap_size count =
-  (* Currently a single element takes 64 bytes *)
-  let heap_space_per_element = 64 in
-  expect_equals ~name:"heap_size" (heap_size ()) (count * heap_space_per_element)
+  (* Currently a single element takes 40 bytes (1 word header + 4 words data).
+   * A single char takes 4 words because we serialize, compress, and word-align.
+   * In practice, with real data, the overhead is insignificant, and made up for
+   * with compression.
+   *
+   * TODO: Hard-coding the space per element is far from ideal. The number below
+   * is currently correct for single-char values, but the underlying
+   * implementation could change, or a test might try to write a larger value,
+   * causing problems. Instead, it would be a good idea for TestHeap.add to
+   * return the number of bytes consumed in the heap, and use that instead. *)
+  let heap_space_per_element = 40 in
+  expect_equals ~name:"heap_size" (SharedMem.heap_size ()) (count * heap_space_per_element)
 
 let expect_mem key =
   expect ~msg:(Printf.sprintf "Expected key '%s' to be in hashtable" key) @@ mem key
@@ -69,33 +71,34 @@ let expect_mem key =
 let expect_not_mem key =
   expect ~msg:(Printf.sprintf "Expected key '%s' to not be in hashtable" key) @@ not (mem key)
 
+let expect_mem_old key =
+  expect ~msg:(Printf.sprintf "Expected oldified key '%s' to be in hashtable" key) @@ mem_old key
+
+let expect_not_mem_old key =
+  expect ~msg:(Printf.sprintf "Expected oldified key '%s' to not be in hashtable" key)
+  @@ not (mem_old key)
+
 let expect_get key expected =
-  let value = get key in
+  let value = Base.Option.value_exn (get key) in
   expect
     ~msg:(Printf.sprintf "Expected key '%s' to have value '%s', got '%s" key expected value)
     (value = expected)
 
-let expect_gentle_collect expected =
+let expect_compact expected =
+  let old_cb = !SharedMem.on_compact in
+  let actual = ref false in
+  (SharedMem.on_compact := (fun _ _ -> actual := true));
+  SharedMem.collect_full ();
+  SharedMem.on_compact := old_cb;
   expect
     ~msg:
       (Printf.sprintf
-         "Expected gentle collection to be %sneeded"
-         ( if expected then
+         "Expected collection to be %sneeded"
+         (if expected then
            ""
          else
-           "not " ))
-    (SharedMem.should_collect `gentle = expected)
-
-let expect_aggressive_collect expected =
-  expect
-    ~msg:
-      (Printf.sprintf
-         "Expected aggressive collection to be %sneeded"
-         ( if expected then
-           ""
-         else
-           "not " ))
-    (SharedMem.should_collect `aggressive = expected)
+           "not "))
+    (!actual = expected)
 
 let test_ops () =
   expect_stats ~nonempty:0 ~used:0;
@@ -105,14 +108,15 @@ let test_ops () =
   expect_stats ~nonempty:1 ~used:1;
   expect_mem "0";
 
-  move "0" "1";
+  oldify "0";
   expect_stats ~nonempty:2 ~used:1;
   expect_not_mem "0";
-  expect_mem "1";
+  expect_mem_old "0";
 
-  remove "1";
+  remove_old "0";
   expect_stats ~nonempty:2 ~used:0;
-  expect_not_mem "1"
+  expect_not_mem "0";
+  expect_not_mem_old "0"
 
 let test_hashtbl_full_hh_add () =
   expect_stats ~nonempty:0 ~used:0;
@@ -131,26 +135,28 @@ let test_hashtbl_full_hh_add () =
   try
     add "8" "";
     expect ~msg:"Expected the hash table to be full" false
-  with SharedMem.Hash_table_full -> ()
+  with
+  | SharedMem.Hash_table_full -> ()
 
 let test_hashtbl_full_hh_move () =
   expect_stats ~nonempty:0 ~used:0;
 
   add "0" "";
-  move "0" "1";
-  move "1" "2";
-  move "2" "3";
-  move "3" "4";
-  move "4" "5";
-  move "5" "6";
-  move "6" "7";
+  add "1" "";
+  add "2" "";
+  add "3" "";
+  add "4" "";
+  add "5" "";
+  add "7" "";
+  add "8" "";
 
-  expect_stats ~nonempty:8 ~used:1;
+  expect_stats ~nonempty:8 ~used:8;
 
   try
-    move "7" "8";
+    oldify "0";
     expect ~msg:"Expected the hash table to be full" false
-  with SharedMem.Hash_table_full -> ()
+  with
+  | SharedMem.Hash_table_full -> ()
 
 (**
  * An important property to remember about the shared hash table is if a key
@@ -182,39 +188,31 @@ let test_no_overwrite () =
 let test_reuse_slots () =
   expect_stats ~nonempty:0 ~used:0;
 
-  add "0" "0";
-  add "1" "1";
-  expect_mem "0";
+  add "1" "";
   expect_mem "1";
-  expect_stats ~nonempty:2 ~used:2;
+  expect_stats ~nonempty:1 ~used:1;
 
   (* If we reuse a previously used slot, the number of nonempty slots
    * stays the same
    *)
   remove "1";
   expect_not_mem "1";
-  expect_stats ~nonempty:2 ~used:1;
+  expect_stats ~nonempty:1 ~used:0;
   add "1" "Foo";
   expect_mem "1";
   expect_get "1" "Foo";
-  expect_stats ~nonempty:2 ~used:2;
+  expect_stats ~nonempty:1 ~used:1;
 
-  (* If we move to a previously used slot, nonempty slots stays the same *)
-  remove "1";
+  (* Oldifying will use a new slot for the old key *)
+  oldify "1";
   expect_not_mem "1";
+  expect_mem_old "1";
   expect_stats ~nonempty:2 ~used:1;
-  move "0" "1";
-  expect_not_mem "0";
+
+  (* Reviving will reuse the original slot *)
+  revive "1";
   expect_mem "1";
-  expect_get "1" "0";
-  expect_stats ~nonempty:2 ~used:1;
-
-  (* Moving to a brand new key will increase number of nonempty slots *)
-  move "1" "2";
-  expect_not_mem "1";
-  expect_mem "2";
-  expect_get "2" "0";
-  expect_stats ~nonempty:3 ~used:1
+  expect_stats ~nonempty:2 ~used:1
 
 (* Test basic garbage collection works *)
 let test_gc_collect () =
@@ -224,45 +222,19 @@ let test_gc_collect () =
   add "1" "1";
 
   (* no memory is wasted *)
-  expect_gentle_collect false;
-  expect_aggressive_collect false;
+  expect_compact false;
   expect_heap_size 2;
   expect_mem "0";
   expect_mem "1";
+
+  (* Removing an element does not decrease used heap size *)
   remove "1";
   expect_heap_size 2;
 
   (* Garbage collection should remove the space taken by the removed element *)
-  gentle_collect ();
+  expect_compact true;
   expect_heap_size 1;
   expect_mem "0"
-
-(* Test aggresive garbage collection versus gentle *)
-let test_gc_aggressive () =
-  expect_stats ~nonempty:0 ~used:0;
-  add "0" "0";
-  add "1" "1";
-  expect_heap_size 2;
-
-  (* Since latest heap size is zero,
-      now it should gc, but theres nothing to gc,
-      so the heap will stay the same *)
-  expect_gentle_collect false;
-  gentle_collect ();
-  expect_heap_size 2;
-  remove "1";
-  add "2" "2";
-  expect_heap_size 3;
-
-  (* Gentle garbage collection shouldn't catch this *)
-  expect_gentle_collect false;
-  gentle_collect ();
-  expect_heap_size 3;
-
-  (* Aggressive garbage collection should run *)
-  expect_aggressive_collect true;
-  aggressive_collect ();
-  expect_heap_size 2
 
 let test_heapsize_decrease () =
   expect_stats ~nonempty:0 ~used:0;
@@ -277,19 +249,34 @@ let test_heapsize_decrease () =
   add "4" "4";
   add "5" "5";
   expect_heap_size 6;
-  (* This runs because 6 >= 2*3 *)
-  gentle_collect ();
+  expect_compact true;
   expect_heap_size 3;
   add "0" "0";
   add "1" "1";
   remove "4";
   remove "5";
   expect_heap_size 5;
-  (* Aggressive collection should kick in,
-   * because 5 >= 1.2*3 *)
-  aggressive_collect ();
+  expect_compact true;
   expect_heap_size 3;
   ()
+
+let hash_table_pow = 3
+
+let test_full () =
+  (* add 2^3 hash table entries *)
+  assert (hash_table_pow = 3);
+  add "1" "";
+  add "2" "";
+  add "3" "";
+  add "4" "";
+  add "5" "";
+  add "6" "";
+  add "7" "";
+  add "8" "";
+  let passed = ref false in
+  (try add "9" "" with
+  | SharedMem.Hash_table_full -> passed := true);
+  assert !passed
 
 let tests () =
   let list =
@@ -300,8 +287,8 @@ let tests () =
       ("test_no_overwrite", test_no_overwrite);
       ("test_reuse_slots", test_reuse_slots);
       ("test_gc_collect", test_gc_collect);
-      ("test_gc_aggressive", test_gc_aggressive);
       ("test_heapsize_decrease", test_heapsize_decrease);
+      ("test_full", test_full);
     ]
   in
   let setup_test (name, test) =
@@ -309,9 +296,7 @@ let tests () =
       fun () ->
         let num_workers = 0 in
         let handle =
-          SharedMem.init
-            ~num_workers
-            { SharedMem.heap_size = 1024; hash_table_pow = 3; log_level = 0 }
+          SharedMem.init ~num_workers { SharedMem.heap_size = 1024; hash_table_pow; log_level = 0 }
         in
         ignore (handle : SharedMem.handle);
         test ();
@@ -319,4 +304,6 @@ let tests () =
   in
   List.map setup_test list
 
-let () = Unit_test.run_all (tests ())
+let () =
+  EventLogger.init_fake ();
+  Unit_test.run_all (tests ())

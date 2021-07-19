@@ -58,8 +58,8 @@ end
 module PolyInstantiation = struct
   let find cx reason_tapp typeparam op_reason =
     let cache = Context.instantiation_cache cx in
-    try Hashtbl.find cache (reason_tapp, typeparam.reason, op_reason)
-    with _ ->
+    try Hashtbl.find cache (reason_tapp, typeparam.reason, op_reason) with
+    | _ ->
       let t = ImplicitTypeArgument.mk_targ cx typeparam (Nel.hd op_reason) reason_tapp in
       Hashtbl.add cache (reason_tapp, typeparam.reason, op_reason) t;
       t
@@ -100,14 +100,14 @@ module Eval = struct
 end
 
 module Fix = struct
-  let find cx reason i =
+  let find cx is_this i =
     let cache = Context.fix_cache cx in
-    let cache_key = (reason, i) in
+    let cache_key = (is_this, i) in
     Hashtbl.find_opt cache cache_key
 
-  let add cx reason i tvar =
+  let add cx is_this i tvar =
     let cache = Context.fix_cache cx in
-    let cache_key = (reason, i) in
+    let cache_key = (is_this, i) in
     Hashtbl.add cache cache_key tvar
 end
 

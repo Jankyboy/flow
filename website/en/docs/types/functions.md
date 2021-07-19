@@ -207,20 +207,26 @@ async function method(): Promise<number> {
 ### Function `this` <a class="toc" id="toc-function-this" href="#toc-function-this"></a>
 
 Every function in JavaScript can be called with a special context named `this`.
-You can call a function with any context that you want.
-
-In Flow you don't type annotate `this` and Flow will check whatever context you
-call the function with.
+You can call a function with any context that you want. Flow allows you to annotate
+the type for this context by adding a special parameter at the start of the function's parameter list:
 
 ```js
-function method() {
-  return this;
+// @flow
+function method<T>(this: { x: T }) : T {
+  return this.x;
 }
 
-var num: number = method.call(42);
-// $ExpectError
-var str: string = method.call(42);
+var num: number = method.call({x : 42});
+var str: string = method.call({x : 42}); // error
 ```
+
+This parameter has no effect at runtime, and is erased along with types when Flow is transformed into JavaScript.
+When present, `this` parameters must always appear at the very beginning of the function's parameter list, and must
+have an annotation. Additionally, [arrow functions](./#toc-arrow-functions) may not have a `this` parameter annotation, as
+these functions bind their `this` parameter at the definition site, rather than the call site.
+
+If an explicit `this` parameter is not provided, Flow will attempt to infer one based on usage. If `this` is not mentioned
+in the body of the function, Flow will infer `mixed` for its `this` parameter.
 
 ### Predicate Functions <a class="toc" id="toc-predicate-functions" href="#toc-predicate-functions"></a>
 
@@ -267,6 +273,8 @@ function concat(a: ?string, b: ?string): string {
 }
 ```
 
+#### Limitations of predicate functions <a class="toc" id="toc-limitations-of-predicate-functions" href="#toc-limitations-of-predicate-functions"></a>
+
 The body of these predicate functions need to be expressions (i.e. local variable declarations are not supported).
 But it's possible to call other predicate functions inside a predicate function.
 For example:
@@ -296,6 +304,38 @@ foo('a');
 foo(5);
 foo([]);
 ```
+
+Another limitation is on the range of predicates that can be encoded. The refinements
+that are supported in a predicate function must refer directly to the value that
+is passed in as an argument to the respective call.
+
+For example, consider the *inlined* refinement
+
+```js
+declare var obj: { n?: number };
+
+if (obj.n) {
+  const n: number = obj.n;
+}
+```
+Here, Flow will let you refine `obj.n` from `?number` to `number`. Note that the
+refinement here is on the property `n` of `obj`, rather than `obj` itself.
+
+If you tried to create a *predicate* function
+```js
+function bar(a): %checks {
+  return a.n;
+}
+```
+to encode the same condition, then the following refinement would fail
+```js
+if (bar(obj)) {
+  // $ExpectError
+  const n: number = obj.n;
+}
+```
+This is because the only refinements supported through `bar` would be on `obj` itself.
+
 
 ### Callable Objects <a class="toc" id="toc-callable-objects" href="#toc-callable-objects"></a>
 

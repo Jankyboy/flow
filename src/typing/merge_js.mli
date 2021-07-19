@@ -5,45 +5,19 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-type get_ast_return = Loc.t Flow_ast.Comment.t list * (ALoc.t, ALoc.t) Flow_ast.Program.t
+val optimize_builtins : Context.t -> unit
 
-module Reqs : sig
-  type t
+val post_merge_checks :
+  Context.t ->
+  Context.master_context ->
+  (ALoc.t, ALoc.t) Flow_ast.Program.t ->
+  (ALoc.t, ALoc.t * Type.t) Flow_ast.Program.t ->
+  Context.metadata ->
+  File_sig.With_ALoc.t ->
+  unit
 
-  val empty : t
-
-  val add_impl : string -> File_key.t -> Loc_collections.ALocSet.t -> t -> t
-
-  val add_dep_impl : string -> File_key.t -> Context.sig_t * Loc_collections.ALocSet.t -> t -> t
-
-  val add_unchecked : string -> File_key.t -> Loc_collections.ALocSet.t -> t -> t
-
-  val add_res : string -> File_key.t -> Loc_collections.ALocSet.t -> t -> t
-
-  val add_decl : string -> File_key.t -> Loc_collections.ALocSet.t * Modulename.t -> t -> t
-end
-
-val merge_component :
-  metadata:Context.metadata ->
-  lint_severities:Severity.severity LintSettings.t ->
-  strict_mode:StrictModeSettings.t ->
-  file_sigs:File_sig.With_ALoc.t Utils_js.FilenameMap.t ->
-  get_ast_unsafe:(File_key.t -> get_ast_return) ->
-  get_aloc_table_unsafe:(File_key.t -> ALoc.table) ->
-  get_docblock_unsafe:(File_key.t -> Docblock.t) ->
-  phase:Context.phase ->
-  (* component *)
-  File_key.t Nel.t ->
-  (* requires *)
-  Reqs.t ->
-  (* dependency cxs *)
-  Context.sig_t list ->
-  (* master cx *)
-  Context.sig_t ->
-  (* cxs in component order, hd is merged leader, along with a coverage summary for each file *)
-  (Context.t * (ALoc.t, ALoc.t) Flow_ast.Program.t * (ALoc.t, ALoc.t * Type.t) Flow_ast.Program.t)
-  Nel.t
-
-module ContextOptimizer : sig
-  val sig_context : Context.t -> string list -> Xx.hash
-end
+val get_lint_severities :
+  Context.metadata ->
+  StrictModeSettings.t ->
+  Severity.severity LintSettings.t ->
+  Severity.severity LintSettings.t

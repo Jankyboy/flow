@@ -25,7 +25,7 @@ let show m =
             spf
               "%s\n%s - %s\n"
               (Reason.string_of_loc loc)
-              sym_name
+              (Reason.display_string_of_name sym_name)
               (Ty_debug.ctor_of_provenance sym_provenance)
           in
           x :: a)
@@ -191,13 +191,13 @@ module Error = struct
 
   type import_error =
     | Loc_source_none
-    | Parsing_heaps_get_ast_error
+    | Parsing_heaps_get_sig_error
     | Indeterminate_module_type
     | No_matching_export of string * ALoc.t
 
   type import_error_counts = {
     loc_source_none: int;
-    parsing_heaps_get_ast_error: int;
+    parsing_heaps_get_sig_error: int;
     indeterminate_module_type: int;
     no_matching_export: int;
   }
@@ -224,7 +224,7 @@ module Error = struct
       import_error =
         {
           loc_source_none = 0;
-          parsing_heaps_get_ast_error = 0;
+          parsing_heaps_get_sig_error = 0;
           indeterminate_module_type = 0;
           no_matching_export = 0;
         };
@@ -235,7 +235,7 @@ module Error = struct
   let combine_import_errors c1 c2 =
     {
       loc_source_none = c1.loc_source_none + c2.loc_source_none;
-      parsing_heaps_get_ast_error = c1.parsing_heaps_get_ast_error + c2.parsing_heaps_get_ast_error;
+      parsing_heaps_get_sig_error = c1.parsing_heaps_get_sig_error + c2.parsing_heaps_get_sig_error;
       indeterminate_module_type = c1.indeterminate_module_type + c2.indeterminate_module_type;
       no_matching_export = c1.no_matching_export + c2.no_matching_export;
     }
@@ -252,7 +252,7 @@ module Error = struct
 
   let serialize_import_error = function
     | Loc_source_none -> "Loc_source_none"
-    | Parsing_heaps_get_ast_error -> "Parsing_heaps_get_ast_error"
+    | Parsing_heaps_get_sig_error -> "Parsing_heaps_get_sig_error"
     | Indeterminate_module_type -> "Indeterminate_module_type"
     | No_matching_export (x, loc) -> spf "No_matching_export (%s, %s)" x (Reason.string_of_aloc loc)
 
@@ -276,7 +276,7 @@ module Error = struct
         string_of_row
           ~indent:4
           "Parsing heaps get ast error"
-          c.import_error.parsing_heaps_get_ast_error;
+          c.import_error.parsing_heaps_get_sig_error;
         string_of_row ~indent:4 "Indeterminate module type" c.import_error.indeterminate_module_type;
         string_of_row ~indent:4 "No matching export" c.import_error.no_matching_export;
         string_of_row ~indent:2 "Serializer error" c.serializer_error;
@@ -287,8 +287,8 @@ module Error = struct
 
   let add_import_error c = function
     | Loc_source_none -> { c with loc_source_none = c.loc_source_none + 1 }
-    | Parsing_heaps_get_ast_error ->
-      { c with parsing_heaps_get_ast_error = c.parsing_heaps_get_ast_error + 1 }
+    | Parsing_heaps_get_sig_error ->
+      { c with parsing_heaps_get_sig_error = c.parsing_heaps_get_sig_error + 1 }
     | Indeterminate_module_type ->
       { c with indeterminate_module_type = c.indeterminate_module_type + 1 }
     | No_matching_export _ -> { c with no_matching_export = c.no_matching_export + 1 }
@@ -428,7 +428,8 @@ module Builtins = struct
 
   let flowfixme_generic_ty ~preference lint_severities suppress_types =
     match suppress_name lint_severities suppress_types preference with
-    | Some name -> Ty.Generic (Ty_symbol.builtin_symbol name, Ty.TypeAliasKind, None)
+    | Some name ->
+      Ty.Generic (Ty_symbol.builtin_symbol (Reason.OrdinaryName name), Ty.TypeAliasKind, None)
     | None -> Ty.Any Ty.Annotated
 
   let flowfixme_ty = flowfixme_generic_ty ~preference:"$FlowFixMe"
@@ -448,7 +449,7 @@ module Builtins = struct
     {
       Ty.sym_provenance = Ty.Builtin;
       sym_def_loc = ALoc.none;
-      sym_name = "$TEMPORARY$object";
+      sym_name = Reason.OrdinaryName "$TEMPORARY$object";
       sym_anonymous = false;
     }
 
@@ -456,7 +457,7 @@ module Builtins = struct
     {
       Ty.sym_provenance = Ty.Builtin;
       sym_def_loc = ALoc.none;
-      sym_name = "$TEMPORARY$array";
+      sym_name = Reason.OrdinaryName "$TEMPORARY$array";
       sym_anonymous = false;
     }
 end
@@ -488,10 +489,10 @@ module Validator = struct
           Ty.explicit_any
         | Ty.Any
             (Ty.Unsound
-              ( ( Ty.Constructor | Ty.DummyStatic | Ty.Existential | Ty.Exports
-                | Ty.FunctionPrototype | Ty.InferenceHooks | Ty.InstanceOfRefinement | Ty.Merged
-                | Ty.ResolveSpread | Ty.Unchecked | Ty.Unimplemented | Ty.UnresolvedType
-                | Ty.WeakContext ) as kind )) ->
+              (( Ty.Constructor | Ty.DummyStatic | Ty.Existential | Ty.Exports
+               | Ty.FunctionPrototype | Ty.InferenceHooks | Ty.InstanceOfRefinement | Ty.Merged
+               | Ty.ResolveSpread | Ty.Unchecked | Ty.Unimplemented | Ty.UnresolvedType
+               | Ty.WeakContext ) as kind)) ->
           env := Any_Unsound kind :: !env;
           Ty.explicit_any
         | Ty.Utility (Ty.ReactElementConfigType (Ty.Fun _)) ->
@@ -507,7 +508,7 @@ module Validator = struct
             super#on_t env t
         | Ty.Fun f ->
           (* skip validating fun_static to preserve behavior from before fun_static
-          was added to fun_t *)
+             was added to fun_t *)
           super#on_t env Ty.(Fun { f with fun_static = Top })
         | _ -> super#on_t env t
     end
@@ -547,7 +548,7 @@ class mapper_type_printing_hardcoded_fixes =
 
     method private normalize_function ff =
       let open Flow_ast.Type.Function in
-      let { params = (loc, { Params.params; rest; comments }); _ } = ff in
+      let { params = (loc, { Params.params; rest; this_; comments }); _ } = ff in
       let (normalized_params_rev, _) =
         List.fold_left
           (fun (p, c) param ->
@@ -567,7 +568,7 @@ class mapper_type_printing_hardcoded_fixes =
           params
       in
       let normalized_params = List.rev normalized_params_rev in
-      { ff with params = (loc, { Params.params = normalized_params; rest; comments }) }
+      { ff with params = (loc, { Params.params = normalized_params; rest; this_; comments }) }
 
     method private type_generic_normalize (t : ('loc, 'loc) Flow_ast.Type.t) =
       super#type_
@@ -600,22 +601,23 @@ class patch_up_react_mapper ?(imports_react = false) () =
        * it is imported with the same mechanism we import other Remote symbols.
        * Otherwise, we refer to these names as 'React.NAME'. *)
       | Ty.Generic
-          ( ( {
-                Ty.sym_name =
-                  ( "AbstractComponent" | "ChildrenArray" | "ComponentType" | "Config" | "Context"
-                  | "Element" | "ElementConfig" | "ElementProps" | "ElementRef" | "ElementType"
-                  | "Key" | "Node" | "Portal" | "Ref" | "StatelessFunctionalComponent" ) as name;
-                sym_provenance = Ty_symbol.Library { Ty_symbol.imported_as = None };
-                sym_def_loc;
-                _;
-              } as symbol ),
+          ( ({
+               Ty.sym_name =
+                 Reason.OrdinaryName
+                   (( "AbstractComponent" | "ChildrenArray" | "ComponentType" | "Config" | "Context"
+                    | "Element" | "ElementConfig" | "ElementProps" | "ElementRef" | "ElementType"
+                    | "Key" | "Node" | "Portal" | "Ref" | "StatelessFunctionalComponent" ) as name);
+               sym_provenance = Ty_symbol.Library { Ty_symbol.imported_as = None };
+               sym_def_loc;
+               _;
+             } as symbol),
             kind,
             args_opt )
         when is_react_loc sym_def_loc ->
         let args_opt = Flow_ast_mapper.map_opt (ListUtils.ident_map (this#on_t loc)) args_opt in
         let symbol =
           if imports_react then
-            { symbol with Ty.sym_name = "React." ^ name }
+            { symbol with Ty.sym_name = Reason.OrdinaryName ("React." ^ name) }
           else
             { symbol with Ty.sym_provenance = Ty.Remote { Ty.imported_as = None } }
         in
@@ -625,11 +627,15 @@ class patch_up_react_mapper ?(imports_react = false) () =
     method! on_prop loc prop =
       let prop =
         match prop with
-        | Ty.NamedProp { name; prop = named_prop; from_proto } when Reason.is_internal_name name ->
-          Hh_logger.warn "ShadowProp %s at %s" name (Reason.string_of_loc loc);
+        | Ty.NamedProp { name; prop = named_prop; from_proto; def_loc }
+          when Reason.is_internal_name name ->
+          Hh_logger.warn
+            "ShadowProp %s at %s"
+            (Reason.display_string_of_name name)
+            (Reason.string_of_loc loc);
           (* Shadow props appear as regular props *)
-          let name = String.sub name 1 (String.length name - 1) in
-          Ty.NamedProp { name; prop = named_prop; from_proto }
+          let name = Reason.OrdinaryName (Reason.uninternal_name name) in
+          Ty.NamedProp { name; prop = named_prop; from_proto; def_loc }
         | prop -> prop
       in
       super#on_prop loc prop

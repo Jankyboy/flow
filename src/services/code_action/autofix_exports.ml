@@ -15,7 +15,6 @@ let set_of_fixable_signature_verification_locations tolerable_errors =
         ( ExpectedAnnotation (loc, _)
         | UnexpectedExpression (loc, _)
         | UnexpectedObjectKey (loc, _)
-        | UnexpectedObjectSpread (loc, _)
         | EmptyArray loc
         | EmptyObject loc
         | UnexpectedArraySpread (loc, _) ) ->
@@ -39,7 +38,10 @@ let fix_signature_verification_error_at_loc ?remote_converter ~full_cx ~file_sig
 let fix_signature_verification_errors ~file_key ~full_cx ~file_sig ~typed_ast =
   let open Insert_type in
   let remote_converter =
-    new ImportsHelper.remote_converter ~iteration:0 ~file:file_key ~reserved_names:SSet.empty
+    new Insert_type_imports.ImportsHelper.remote_converter
+      ~iteration:0
+      ~file:file_key
+      ~reserved_names:SSet.empty
   in
   let try_it loc (ast, it_errs) =
     try
@@ -51,7 +53,8 @@ let fix_signature_verification_errors ~file_key ~full_cx ~file_sig ~typed_ast =
           ast
           loc,
         it_errs )
-    with FailedToInsertType err -> (ast, error_to_string err :: it_errs)
+    with
+    | FailedToInsertType err -> (ast, error_to_string err :: it_errs)
   in
   fun ast locs ->
     let ((loc, p), it_errors) = LocSet.fold try_it locs (ast, []) in

@@ -8,13 +8,13 @@
 module Js = Js_of_ocaml.Js
 module Sys_js = Js_of_ocaml.Sys_js
 
-let lazy_table_of_aloc _ =
-  lazy (failwith "Did not expect to encounter an abstract location in flow_dot_js")
+(* We do not expect to encounter a keyed location in flow_dot_js *)
+let loc_of_aloc = ALoc.to_loc_exn
 
 let error_of_parse_error source_file (loc, err) =
   Error_message.EParseError (ALoc.of_loc loc, err)
   |> Flow_error.error_of_msg ~trace_reasons:[] ~source_file
-  |> Flow_error.concretize_error lazy_table_of_aloc
+  |> Flow_error.concretize_error loc_of_aloc
   |> Flow_error.make_error_printable
 
 let error_of_file_sig_error source_file e =
@@ -22,7 +22,7 @@ let error_of_file_sig_error source_file e =
     match e with
     | IndeterminateModuleType loc -> Error_message.EIndeterminateModuleType (ALoc.of_loc loc))
   |> Flow_error.error_of_msg ~trace_reasons:[] ~source_file
-  |> Flow_error.concretize_error lazy_table_of_aloc
+  |> Flow_error.concretize_error loc_of_aloc
   |> Flow_error.make_error_printable
 
 let parse_content file content =
@@ -95,9 +95,16 @@ let load_lib_files
            let lib_file = File_key.LibFile file in
            match parse_content lib_file lib_content with
            | Ok (ast, file_sig) ->
-             let rev_table = lazy (ALoc.make_empty_reverse_table ()) in
+             (* Lib files use only concrete locations, so this is not used. *)
+             let aloc_table = lazy (ALoc.empty_table lib_file) in
              let cx =
-               Context.make ccx metadata lib_file rev_table Files.lib_module_ref Context.Checking
+               Context.make
+                 ccx
+                 metadata
+                 lib_file
+                 aloc_table
+                 (Reason.OrdinaryName Files.lib_module_ref)
+                 Context.Checking
              in
              let syms =
                Type_inference_js.infer_lib_file
@@ -117,11 +124,11 @@ let load_lib_files
              save_lint_suppressions lib_file severity_cover;
 
              (* symbols loaded from this file are suppressed if found in later ones *)
-             SSet.union exclude_syms (SSet.of_list syms)
+             NameUtils.Set.union exclude_syms (NameUtils.Set.of_list syms)
            | Error parse_errors ->
              save_parse_errors lib_file parse_errors;
              exclude_syms)
-         SSet.empty
+         NameUtils.Set.empty
   in
   ()
 
@@ -147,16 +154,14 @@ let stub_metadata ~root ~checked =
     (* global *)
     automatic_require_default = false;
     babel_loose_array_spread = false;
+    check_updates_against_providers = false;
     max_literal_length = 100;
     enable_const_params = false;
     enable_enums = true;
+    enable_enums_with_unknown_members = true;
+    enable_indexed_access = true;
+    enforce_local_inference_annotations = false;
     enforce_strict_call_arity = true;
-    esproposal_class_static_fields = Options.ESPROPOSAL_ENABLE;
-    esproposal_class_instance_fields = Options.ESPROPOSAL_ENABLE;
-    esproposal_decorators = Options.ESPROPOSAL_ENABLE;
-    esproposal_export_star_as = Options.ESPROPOSAL_ENABLE;
-    esproposal_optional_chaining = Options.ESPROPOSAL_ENABLE;
-    esproposal_nullish_coalescing = Options.ESPROPOSAL_ENABLE;
     exact_by_default = false;
     facebook_fbs = None;
     facebook_fbt = None;
@@ -166,42 +171,42 @@ let stub_metadata ~root ~checked =
     max_trace_depth = 0;
     max_workers = 0;
     react_runtime = Options.ReactRuntimeClassic;
+    react_server_component_exts = SSet.empty;
     recursion_limit = 10000;
+    reorder_checking = Options.Lexical;
     root;
+    run_post_inference_implicit_instantiation = false;
     strict_es6_import_export = false;
     strict_es6_import_export_excludes = [];
     strip_root = true;
     suppress_types = SSet.empty;
-    default_lib_dir = None;
     trust_mode = Options.NoTrust;
     type_asserts = false;
   }
 
-let master_cx_ref : (Path.t * Context.sig_t) option ref = ref None
+let master_cx_ref : (Path.t * Context.master_context) option ref = ref None
 
 let get_master_cx root =
   match !master_cx_ref with
   | None -> failwith "builtins not initialized"
-  | Some (prev_root, sig_cx) ->
+  | Some (prev_root, master_cx) ->
     assert (prev_root = root);
-    sig_cx
+    master_cx
 
 let init_builtins filenames =
-  let aloc_tables = Utils_js.FilenameMap.empty in
   let root = Path.dummy_path in
-  let sig_cx = Context.make_sig () in
-  let ccx = Context.make_ccx sig_cx aloc_tables in
+  let ccx = Context.(make_ccx (empty_master_cx ())) in
   let master_cx =
-    let rev_table = lazy (ALoc.make_empty_reverse_table ()) in
+    (* Lib files use only concrete locations, so this is not used. *)
+    let aloc_table = lazy (ALoc.empty_table File_key.Builtins) in
     Context.make
       ccx
       (stub_metadata ~root ~checked:false)
       File_key.Builtins
-      rev_table
-      Files.lib_module_ref
+      aloc_table
+      (Reason.OrdinaryName Files.lib_module_ref)
       Context.Checking
   in
-  Flow_js.mk_builtins master_cx;
   let () =
     let metadata = stub_metadata ~root ~checked:true in
     load_lib_files
@@ -213,54 +218,44 @@ let init_builtins filenames =
       (fun _file _sups -> ())
       (fun _file _lint -> ())
   in
-  let reason = Reason.builtin_reason (Reason.RCustom "module") in
-  let builtin_module = Obj_type.mk_unsealed master_cx reason in
-  Flow_js.flow_t master_cx (builtin_module, Flow_js.builtins master_cx);
-  ignore (Merge_js.ContextOptimizer.sig_context master_cx [Files.lib_module_ref]);
-  master_cx_ref := Some (root, sig_cx)
+  Merge_js.optimize_builtins master_cx;
+  master_cx_ref :=
+    Some
+      ( root,
+        { Context.master_sig_cx = Context.sig_cx master_cx; builtins = Context.builtins master_cx }
+      )
 
 let infer_and_merge ~root filename ast file_sig =
-  (* this is a VERY pared-down version of Merge_service.merge_strict_context.
-     it relies on the JS version only supporting libs + 1 file, so every
-     module you can require() must come from a lib; this skips resolving
-     module names and just adds them all to the `decls` list. *)
-  let metadata = stub_metadata ~root ~checked:true in
+  (* create cx *)
   let master_cx = get_master_cx root in
-  let require_loc_map = File_sig.With_ALoc.(require_loc_map file_sig.module_sig) in
-  let reqs =
-    SMap.fold
-      (fun module_name locs reqs ->
-        let m = Modulename.String module_name in
-        let locs = locs |> Nel.to_list |> Loc_collections.ALocSet.of_list in
-        Merge_js.Reqs.add_decl module_name filename (locs, m) reqs)
-      require_loc_map
-      Merge_js.Reqs.empty
+  let ccx = Context.make_ccx master_cx in
+  let metadata = stub_metadata ~root ~checked:true in
+  (* flow.js does not use abstract locations, so this is not used *)
+  let aloc_table = lazy (ALoc.empty_table filename) in
+  let module_ref = Reason.OrdinaryName (Files.module_ref filename) in
+  let cx = Context.make ccx metadata filename aloc_table module_ref Context.Checking in
+  (* connect requires *)
+  Type_inference_js.add_require_tvars cx file_sig;
+  let connect_requires mref =
+    let module_name = Reason.internal_module_name mref in
+    Nel.iter (fun loc ->
+        let reason = Reason.(mk_reason (RCustom mref) loc) in
+        let module_t = Flow_js_utils.lookup_builtin_strict cx module_name reason in
+        let require_t = Context.find_require cx loc in
+        Flow_js.flow_t cx (module_t, require_t))
   in
-  let lint_severities = LintSettings.empty_severities in
-  let strict_mode = StrictModeSettings.empty in
-  let file_sigs = Utils_js.FilenameMap.singleton filename file_sig in
-  let (_, { Flow_ast.Program.all_comments; _ }) = ast in
-  let aloc_ast = Ast_loc_utils.loc_to_aloc_mapper#program ast in
-  let ((cx, _, tast), _other_cxs) =
-    Merge_js.merge_component
-      ~metadata
-      ~lint_severities
-      ~strict_mode
-      ~file_sigs
-      ~get_ast_unsafe:(fun _ -> (all_comments, aloc_ast))
-        (* TODO (nmote, sainati) - Exceptions should mainly be used for exceptional code flows. We
-         * shouldn't use them to decide whether or not to use abstract locations. We should pass through
-         * whatever options we need instead *)
-      ~get_aloc_table_unsafe:(fun _ ->
-        raise (Parsing_heaps_exceptions.Sig_ast_ALoc_table_not_found ""))
-      ~get_docblock_unsafe:(fun _ -> stub_docblock)
-      ~phase:Context.Checking
-      (Nel.one filename)
-      reqs
-      []
-      master_cx
+  SMap.iter connect_requires File_sig.With_ALoc.(require_loc_map file_sig.module_sig);
+  (* infer ast *)
+  let (_, { Flow_ast.Program.all_comments = comments; _ }) = ast in
+  let ast = Ast_loc_utils.loc_to_aloc_mapper#program ast in
+  let lint_severities =
+    let base_severities = LintSettings.empty_severities in
+    let strict_mode = StrictModeSettings.empty in
+    Merge_js.get_lint_severities metadata strict_mode base_severities
   in
-  (cx, tast)
+  let typed_ast = Type_inference_js.infer_ast cx filename comments ast ~lint_severities in
+  Merge_js.post_merge_checks cx master_cx ast typed_ast metadata file_sig;
+  (cx, typed_ast)
 
 let check_content ~filename ~content =
   let stdin_file = Some (Path.make_unsafe filename, content) in
@@ -286,14 +281,10 @@ let check_content ~filename ~content =
           severity_cover
       in
       let errors =
-        errors
-        |> Flow_error.concretize_errors lazy_table_of_aloc
-        |> Flow_error.make_errors_printable
+        errors |> Flow_error.concretize_errors loc_of_aloc |> Flow_error.make_errors_printable
       in
       let warnings =
-        warnings
-        |> Flow_error.concretize_errors lazy_table_of_aloc
-        |> Flow_error.make_errors_printable
+        warnings |> Flow_error.concretize_errors loc_of_aloc |> Flow_error.make_errors_printable
       in
       let (errors, _, suppressions) =
         Error_suppressions.filter_suppressed_errors
@@ -383,8 +374,10 @@ let types_to_json types ~strip_root =
         |> List.map (fun (loc, str) ->
                let json_assoc =
                  ("type", JSON_String str)
-                 :: ("reasons", JSON_Array [])
-                 :: ("loc", json_of_loc ~strip_root ~offset_table:None loc)
+                 ::
+                 ("reasons", JSON_Array [])
+                 ::
+                 ("loc", json_of_loc ~strip_root ~offset_table:None loc)
                  :: Errors.deprecated_json_props_of_loc ~strip_root loc
                in
                JSON_Object json_assoc)

@@ -20,6 +20,7 @@ type error_code =
   | CannotSpreadInterface
   | CannotWrite
   | CannotWriteEnum
+  | ClassObject
   | DefaultImportAccess
   | DeprecatedType
   | DeprecatedUtility
@@ -29,20 +30,17 @@ type error_code =
   | DuplicateModule
   | DuplicateProvideModuleDecl
   | EnumValueAsType
+  | EscapedGeneric
   | ExponentialSpread
   | ExportRenamedDefault
   | ExportValueAsType
   | ExtraArg
   | ExtraTypeArg
   | FunctionPredicate
-  | IllegalClassField
-  | IllegalDecorator
   | IllegalEnum
-  | IllegalExportStar
   | IllegalGetSet
   | IllegalKey
   | IllegalNewArray
-  | IllegalOptionalChain
   | IllegalThis
   | IllegalTypeof
   | ImplicitInexactObject
@@ -52,6 +50,7 @@ type error_code =
   | IncompatibleCast
   | IncompatibleExact
   | IncompatibleExtend
+  | IncompatibleFunctionIndexer
   | IncompatibleIndexer
   | IncompatibleReturn
   | IncompatibleShape
@@ -60,6 +59,7 @@ type error_code =
   | IncompatibleTypeArg
   | IncompatibleUse
   | IncompatibleVariance
+  | IndexedAccessNotEnabled
   | InvalidCallUtil
   | InvalidCharsetTypeArg
   | InvalidCompare
@@ -95,11 +95,14 @@ type error_code =
   | InvalidTempType
   | LintSetting
   | MalformedPackage
+  | MethodUnbinding
   | MissingAnnot
+  | MissingLocalAnnot
   | MissingArg
   | MissingExport
   | MissingTypeArg
   | MixedImportAndRequire
+  | ToplevelLibraryImport
   | ModuleTypeConflict
   | NameAlreadyBound
   | NonConstVarExport
@@ -112,12 +115,14 @@ type error_code =
   | NotAnArray
   | NotAnObject
   | NotIterable
+  | ObjectThisReference
   | PropMissing
   | ReassignConst
   | ReassignEnum
   | ReassignImport
   | ReferenceBeforeDeclaration
   | RefineAsValue
+  | RequireExplicitEnumSwitchCases
   | SignatureVerificationFailure
   | SketchyNullBool
   | SketchyNullMixed
@@ -130,6 +135,7 @@ type error_code =
   | TypeAsValue
   | UnclearAddition
   | UnclearType
+  | UnderconstrainedImplicitInstantiation
   | UninitializedInstanceProperty
   | UnnecessaryInvariant
   | UnnecessaryOptionalChain
@@ -155,6 +161,7 @@ let code_of_lint : Lints.lint_kind -> error_code = function
   | Lints.ImplicitInexactObject -> ImplicitInexactObject
   | Lints.UninitializedInstanceProperty -> UninitializedInstanceProperty
   | Lints.AmbiguousObjectType -> AmbiguousObjectType
+  | Lints.RequireExplicitEnumSwitchCases -> RequireExplicitEnumSwitchCases
   | Lints.SketchyNumber Lints.SketchyNumberAnd -> SketchyNumberAnd
   | Lints.SketchyNull (Lints.SketchyNullBool | Lints.SketchyNullEnumBool) -> SketchyNullBool
   | Lints.SketchyNull (Lints.SketchyNullString | Lints.SketchyNullEnumString) -> SketchyNullString
@@ -182,6 +189,7 @@ let string_of_code : error_code -> string = function
   | CannotSpreadInterface -> "cannot-spread-interface"
   | CannotWrite -> "cannot-write"
   | CannotWriteEnum -> "cannot-write-enum"
+  | ClassObject -> "class-object-subtyping"
   | DefaultImportAccess -> "default-import-access"
   | DeprecatedType -> "deprecated-type"
   | DeprecatedUtility -> "deprecated-utility"
@@ -191,20 +199,17 @@ let string_of_code : error_code -> string = function
   | DuplicateModule -> "duplicate-module"
   | DuplicateProvideModuleDecl -> "duplicate-provide-module-decl"
   | EnumValueAsType -> "enum-value-as-type"
+  | EscapedGeneric -> "escaped-generic"
   | ExponentialSpread -> "exponential-spread"
   | ExportRenamedDefault -> "export-renamed-default"
   | ExportValueAsType -> "export-value-as-type"
   | ExtraArg -> "extra-arg"
   | ExtraTypeArg -> "extra-type-arg"
   | FunctionPredicate -> "function-predicate"
-  | IllegalClassField -> "illegal-class-field"
-  | IllegalDecorator -> "illegal-decorator"
   | IllegalEnum -> "illegal-enum"
-  | IllegalExportStar -> "illegal-export-star"
   | IllegalGetSet -> "illegal-get-set"
   | IllegalKey -> "illegal-key"
   | IllegalNewArray -> "illegal-new-array"
-  | IllegalOptionalChain -> "illegal-optional-chain"
   | IllegalThis -> "illegal-this"
   | IllegalTypeof -> "illegal-typeof"
   | ImplicitInexactObject -> "implicit-inexact-object"
@@ -214,6 +219,7 @@ let string_of_code : error_code -> string = function
   | IncompatibleCast -> "incompatible-cast"
   | IncompatibleExact -> "incompatible-exact"
   | IncompatibleExtend -> "incompatible-extend"
+  | IncompatibleFunctionIndexer -> "incompatible-function-indexer"
   | IncompatibleIndexer -> "incompatible-indexer"
   | IncompatibleReturn -> "incompatible-return"
   | IncompatibleShape -> "incompatible-shape"
@@ -222,6 +228,7 @@ let string_of_code : error_code -> string = function
   | IncompatibleTypeArg -> "incompatible-type-arg"
   | IncompatibleUse -> "incompatible-use"
   | IncompatibleVariance -> "incompatible-variance"
+  | IndexedAccessNotEnabled -> "indexed-access-off"
   | InvalidCallUtil -> "invalid-call-util"
   | InvalidCharsetTypeArg -> "invalid-charset-type-arg"
   | InvalidCompare -> "invalid-compare"
@@ -257,7 +264,9 @@ let string_of_code : error_code -> string = function
   | InvalidTempType -> "invalid-temp-type"
   | LintSetting -> "lint-setting"
   | MalformedPackage -> "malformed-package"
+  | MethodUnbinding -> "method-unbinding"
   | MissingAnnot -> "missing-annot"
+  | MissingLocalAnnot -> "missing-local-annot"
   | MissingArg -> "missing-arg"
   | MissingExport -> "missing-export"
   | MissingTypeArg -> "missing-type-arg"
@@ -274,12 +283,14 @@ let string_of_code : error_code -> string = function
   | NotAnArray -> "not-an-array"
   | NotAnObject -> "not-an-object"
   | NotIterable -> "not-iterable"
+  | ObjectThisReference -> "object-this-reference"
   | PropMissing -> "prop-missing"
   | ReassignConst -> "reassign-const"
   | ReassignEnum -> "reassign-enum"
   | ReassignImport -> "reassign-import"
   | ReferenceBeforeDeclaration -> "reference-before-declaration"
   | RefineAsValue -> "refine-as-value"
+  | RequireExplicitEnumSwitchCases -> "require-explicit-enum-switch-cases"
   | SignatureVerificationFailure -> "signature-verification-failure"
   | SketchyNullBool -> "sketchy-null-bool"
   | SketchyNullMixed -> "sketchy-null-mixed"
@@ -289,9 +300,11 @@ let string_of_code : error_code -> string = function
   | Speculation -> "speculation"
   | SpeculationAmbiguous -> "speculation-ambiguous"
   | ThisInExportedFunction -> "this-in-exported-function"
+  | ToplevelLibraryImport -> "toplevel-library-import"
   | TypeAsValue -> "type-as-value"
   | UnclearAddition -> "unclear-addition"
   | UnclearType -> "unclear-type"
+  | UnderconstrainedImplicitInstantiation -> "underconstrained-implicit-instantiation"
   | UninitializedInstanceProperty -> "uninitialized-instance-property"
   | UnnecessaryInvariant -> "unnecessary-invariant"
   | UnnecessaryOptionalChain -> "unnecessary-optional-chain"

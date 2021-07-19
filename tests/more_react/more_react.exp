@@ -1,35 +1,46 @@
-Error ------------------------------------------------------------------------------------------------- API.react.js:4:5
+Error ----------------------------------------------------------------------------------------------- App.react.js:27:18
 
-Cannot call `app.setProps` because property `setProps` is missing in `React.Element` [1]. [prop-missing]
+Cannot get `this.props` because property `props` is missing in implicit `this` parameter of function type [1].
+[incompatible-use]
 
-   API.react.js:4:5
-    4| app.setProps({y:42}); // error, y:number but foo expects string in App.react
-           ^^^^^^^^
-
-References:
-   JSX.js:8:3
-         v-------------------------------------------------------------------
-    8|   <App y={42}> // error, y: number but foo expects string in App.react
-    9|     Some text.
-   10|   </App>;
-         -----^ [1]
-
-
-Error ------------------------------------------------------------------------------------------------- API.react.js:5:5
-
-Cannot call `app.setState` because property `setState` is missing in `React.Element` [1]. [prop-missing]
-
-   API.react.js:5:5
-    5| app.setState({z:42}); // error, z:number but foo expects string in App.react
-           ^^^^^^^^
+   App.react.js:27:18
+   27|     var x = this.props.x;
+                        ^^^^^
 
 References:
-   JSX.js:8:3
-         v-------------------------------------------------------------------
-    8|   <App y={42}> // error, y: number but foo expects string in App.react
-    9|     Some text.
-   10|   </App>;
-         -----^ [1]
+   <BUILTINS>/react.js:61:3
+   61|   render(): React$Node;
+         ^^^^^^^^^^^^^^^^^^^^ [1]
+
+
+Error ----------------------------------------------------------------------------------------------- App.react.js:28:18
+
+Cannot get `this.props` because property `props` is missing in implicit `this` parameter of function type [1].
+[incompatible-use]
+
+   App.react.js:28:18
+   28|     var y = this.props.y;
+                        ^^^^^
+
+References:
+   <BUILTINS>/react.js:61:3
+   61|   render(): React$Node;
+         ^^^^^^^^^^^^^^^^^^^^ [1]
+
+
+Error ----------------------------------------------------------------------------------------------- App.react.js:29:18
+
+Cannot get `this.state` because property `state` is missing in implicit `this` parameter of function type [1].
+[incompatible-use]
+
+   App.react.js:29:18
+   29|     var z = this.state.z;
+                        ^^^^^
+
+References:
+   <BUILTINS>/react.js:61:3
+   61|   render(): React$Node;
+         ^^^^^^^^^^^^^^^^^^^^ [1]
 
 
 Error ----------------------------------------------------------------------------------------------- App.react.js:36:14
@@ -58,15 +69,15 @@ Cannot call `checkPropTypes` because function [1] requires another argument. [in
         ^^^^^^^^^^^^^^
 
 References:
-   <BUILTINS>/react.js:229:41
+   <BUILTINS>/react.js:247:41
                                                 v---
-   229|   declare export function checkPropTypes<V>(
-   230|     propTypes : any,
-   231|     values: V,
-   232|     location: string,
-   233|     componentName: string,
-   234|     getStack: ?(() => ?string)
-   235|   ) : void;
+   247|   declare export function checkPropTypes<V>(
+   248|     propTypes : any,
+   249|     values: V,
+   250|     location: string,
+   251|     componentName: string,
+   252|     getStack: ?(() => ?string)
+   253|   ) : void;
           -------^ [1]
 
 
@@ -79,15 +90,15 @@ Cannot call `checkPropTypes` because function [1] requires another argument. [in
         ^^^^^^^^^^^^^^
 
 References:
-   <BUILTINS>/react.js:229:41
+   <BUILTINS>/react.js:247:41
                                                 v---
-   229|   declare export function checkPropTypes<V>(
-   230|     propTypes : any,
-   231|     values: V,
-   232|     location: string,
-   233|     componentName: string,
-   234|     getStack: ?(() => ?string)
-   235|   ) : void;
+   247|   declare export function checkPropTypes<V>(
+   248|     propTypes : any,
+   249|     values: V,
+   250|     location: string,
+   251|     componentName: string,
+   252|     getStack: ?(() => ?string)
+   253|   ) : void;
           -------^ [1]
 
 
@@ -101,8 +112,8 @@ return value. [incompatible-call]
                                                                                                   ^^^ [1]
 
 References:
-   <BUILTINS>/react.js:234:24
-   234|     getStack: ?(() => ?string)
+   <BUILTINS>/react.js:252:24
+   252|     getStack: ?(() => ?string)
                                ^^^^^^ [2]
 
 
@@ -287,8 +298,8 @@ References:
    subclassComponent.js:21:15
    21| declare class D extends React$Component2<Props2, void> {}
                      ^ [1]
-   <BUILTINS>/react.js:26:15
-   26| declare class React$Component<Props, State = void> {
+   <BUILTINS>/react.js:43:15
+   43| declare class React$Component<Props, State = void> {
                      ^^^^^^^^^^^^^^^ [2]
 
 
@@ -304,8 +315,8 @@ References:
    subclassComponent.js:23:15
    23| declare class E extends D {}
                      ^ [1]
-   <BUILTINS>/react.js:26:15
-   26| declare class React$Component<Props, State = void> {
+   <BUILTINS>/react.js:43:15
+   43| declare class React$Component<Props, State = void> {
                      ^^^^^^^^^^^^^^^ [2]
 
 
@@ -321,10 +332,10 @@ References:
    subclassComponent.js:25:15
    25| declare class F {
                      ^ [1]
-   <BUILTINS>/react.js:26:15
-   26| declare class React$Component<Props, State = void> {
+   <BUILTINS>/react.js:43:15
+   43| declare class React$Component<Props, State = void> {
                      ^^^^^^^^^^^^^^^ [2]
 
 
 
-Found 18 errors
+Found 19 errors

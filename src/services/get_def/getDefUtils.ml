@@ -6,12 +6,13 @@
  *)
 
 open Utils_js
-open Parsing_heaps_utils
 module Result = Base.Result
 
 let ( >>= ) = Result.( >>= )
 
 let ( >>| ) = Result.( >>| )
+
+let loc_of_aloc = Parsing_heaps.Reader.loc_of_aloc
 
 (* The default visitor does not provide all of the context we need when visiting an object key. In
  * particular, we need the location of the enclosing object literal. *)
@@ -93,7 +94,7 @@ type def_kind =
    * `bar` *)
   | Use of Type.t * string
   (* In a class, where a property/method is defined. Includes the type of the class and the name
-  of the property. *)
+     of the property. *)
   | Class_def of Type.t * string (* name *) * bool (* static *)
   (* In an object type. Includes the location of the property definition and its name. *)
   | Obj_def of Loc.t * string (* name *)
@@ -116,8 +117,10 @@ let set_def_loc_hook ~reader prop_access_info literal_key_info target_loc =
         | (Use _, Use _)
         | (Class_def _, Class_def _)
         | (Obj_def _, Obj_def _) ->
-          (* Due to generate_tests, we sometimes see hooks firing multiple times for the same
-           * location. This is innocuous and we should take the last result. *)
+          (* If we see hooks firing multiple times for the same
+           * location, this is innocuous and we should take the last result.
+           * Previously, this would occur due to generate-tests.
+           *)
           set_ok new_info
         (* Literals can flow into multiple types. Include them all. *)
         | (Use_in_literal (types, name), Use_in_literal (new_types, new_name)) ->
@@ -254,8 +257,8 @@ let extract_instancet cx ty : (Type.t, string) result =
   Type.(
     let resolved = Members.resolve_type cx ty in
     match resolved with
-    | ThisClassT (_, t)
-    | DefT (_, _, PolyT { t_out = ThisClassT (_, t); _ }) ->
+    | ThisClassT (_, t, _)
+    | DefT (_, _, PolyT { t_out = ThisClassT (_, t, _); _ }) ->
       Ok t
     | _ ->
       let type_string = string_of_ctor resolved in
@@ -417,22 +420,19 @@ let add_literal_properties literal_key_info def_info =
 let get_def_info ~reader ~options env profiling file_key ast_info loc :
     (def_info option, string) result Lwt.t =
   let props_access_info = ref (Ok None) in
-  let (ast, file_sig, info) = ast_info in
+  let (ast, file_sig, type_sig, info) = ast_info in
   (* Check if it's an exported symbol *)
   let loc = Base.Option.value (ImportExportSymbols.find_related_symbol file_sig loc) ~default:loc in
   let info = Docblock.set_flow_mode_for_ide_command info in
   let literal_key_info : (Loc.t * Loc.t * string) option = ObjectKeyAtLoc.get ast loc in
   let%lwt cx =
     set_def_loc_hook ~reader props_access_info literal_key_info loc;
-    let%lwt (cx, _) =
-      Profiling_js.with_timer_lwt profiling ~timer:"MergeContents" ~f:(fun () ->
-          let%lwt () =
-            Types_js.ensure_checked_dependencies ~options ~reader ~env file_key file_sig
-          in
-          Lwt.return
-          @@ Merge_service.merge_contents_context ~reader options file_key ast info file_sig)
-    in
-    Lwt.return cx
+    Profiling_js.with_timer_lwt profiling ~timer:"MergeContents" ~f:(fun () ->
+        let%lwt () = Types_js.ensure_checked_dependencies ~options ~reader ~env file_key file_sig in
+        let (cx, _) =
+          Merge_service.check_contents_context ~reader options file_key ast info file_sig type_sig
+        in
+        Lwt.return cx)
   in
   unset_hooks ();
   !props_access_info %>>= fun props_access_info ->

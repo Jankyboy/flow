@@ -118,8 +118,8 @@ let limit_errors errors =
       diagnostic :: retain
 
 let is_parse_error =
-  let parse_code = Errors.string_of_kind Errors.ParseError in
-  (fun d -> d.PublishDiagnostics.code = PublishDiagnostics.StringCode parse_code)
+  let parse_code = PublishDiagnostics.StringCode "ParseError" in
+  (fun d -> d.PublishDiagnostics.code = parse_code)
 
 let is_not_parse_error d = not (is_parse_error d)
 
@@ -192,10 +192,10 @@ let modify_per_file_errors (uri : Lsp.DocumentUri.t) state f =
   in
   {
     dirty_files =
-      ( if dirty then
+      (if dirty then
         Lsp.UriSet.add uri state.dirty_files
       else
-        state.dirty_files );
+        state.dirty_files);
     file_to_errors_map;
   }
 

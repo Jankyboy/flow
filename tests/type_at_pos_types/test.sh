@@ -63,6 +63,8 @@ printf "generics.js:22:1 = "
 assert_ok "$FLOW" type-at-pos generics.js 22 1 --strip-root --pretty
 printf "generics.js:30:13 = "
 assert_ok "$FLOW" type-at-pos generics.js 30 13 --strip-root --pretty
+printf "generics.js:34:5 = "
+assert_ok "$FLOW" type-at-pos generics.js 34 5 --strip-root --pretty
 
 # ill-formed.js
 printf "ill-formed.js:30:13 = "
@@ -306,3 +308,5 @@ printf "tparam_defaults.js:24:8:\n"
 assert_ok "$FLOW" type-at-pos tparam_defaults.js 24 8 --strip-root --omit-typearg-defaults
 printf "tparam_defaults.js:25:8:\n"
 assert_ok "$FLOW" type-at-pos tparam_defaults.js 25 8 --strip-root --omit-typearg-defaults
+printf "tparam_defaults.js:29:5:\n"
+assert_ok "$FLOW" type-at-pos tparam_defaults.js 29 5 --strip-root --omit-typearg-defaults

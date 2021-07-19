@@ -41,32 +41,35 @@ module Opts = struct
   type opt_error = int * error_kind
 
   type t = {
-    abstract_locations: bool;
-    all: bool;
-    automatic_require_default: bool;
-    babel_loose_array_spread: bool;
-    disable_live_non_parse_errors: bool;
-    emoji: bool;
+    abstract_locations: bool option;
+    all: bool option;
+    autoimports: bool option;
+    automatic_require_default: bool option;
+    babel_loose_array_spread: bool option;
+    check_updates_against_providers: bool;
+    disable_live_non_parse_errors: bool option;
+    emoji: bool option;
     enable_const_params: bool;
+    enforce_local_inference_annotations: bool;
     enforce_strict_call_arity: bool;
-    enforce_well_formed_exports: bool option;
-    enforce_well_formed_exports_includes: string list;
+    enums_with_unknown_members: bool;
     enums: bool;
-    esproposal_class_instance_fields: Options.esproposal_feature_mode;
-    esproposal_class_static_fields: Options.esproposal_feature_mode;
-    esproposal_decorators: Options.esproposal_feature_mode;
-    esproposal_export_star_as: Options.esproposal_feature_mode;
-    esproposal_nullish_coalescing: Options.esproposal_feature_mode;
-    esproposal_optional_chaining: Options.esproposal_feature_mode;
     exact_by_default: bool;
     facebook_fbs: string option;
     facebook_fbt: string option;
     facebook_module_interop: bool;
-    file_watcher: file_watcher option;
     file_watcher_timeout: int option;
-    watchman_sync_timeout: int option;
-    watchman_defer_states: string list;
-    watchman_mergebase_with: string option;
+    file_watcher: file_watcher option;
+    format_bracket_spacing: bool option;  (** print spaces between brackets in object literals *)
+    format_single_quotes: bool option;  (** prefer single-quoted strings *)
+    gc_worker_custom_major_ratio: int option;  (** Gc.control's custom_major_ratio *)
+    gc_worker_custom_minor_max_size: int option;  (** Gc.control's custom_minor_max_size *)
+    gc_worker_custom_minor_ratio: int option;  (** Gc.control's custom_minor_ratio *)
+    gc_worker_major_heap_increment: int option;  (** Gc.control's major_heap_increment *)
+    gc_worker_minor_heap_size: int option;  (** Gc.control's minor_heap_size *)
+    gc_worker_space_overhead: int option;  (** Gc.control's space_overhead *)
+    gc_worker_window_size: int option;  (** Gc.control's window_size *)
+    generate_tests: bool;
     haste_module_ref_prefix: string option;
     haste_name_reducers: (Str.regexp * string) list;
     haste_paths_excludes: string list;
@@ -74,6 +77,7 @@ module Opts = struct
     haste_use_name_reducers: bool;
     ignore_non_literal_requires: bool;
     include_warnings: bool;
+    indexed_access: bool;
     lazy_mode: Options.lazy_mode option;
     log_file: Path.t option;
     max_files_checked_per_worker: int;
@@ -95,22 +99,29 @@ module Opts = struct
     node_resolver_dirnames: string list;
     node_resolver_root_relative_dirnames: string list;
     react_runtime: Options.react_runtime;
+    react_server_component_exts: SSet.t;
     recursion_limit: int;
+    refactor: bool option;
+    reorder_checking: Options.order_mode;
     root_name: string option;
+    run_post_inference_implicit_instantiation: bool;
     saved_state_fetcher: Options.saved_state_fetcher;
+    saved_state_load_sighashes: bool;
     shm_hash_table_pow: int;
     shm_heap_size: int;
     shm_log_level: int;
-    strict_es6_import_export: bool;
     strict_es6_import_export_excludes: string list;
+    strict_es6_import_export: bool;
     suppress_types: SSet.t;
     temp_dir: string;
     traces: int;
     trust_mode: Options.trust_mode;
     type_asserts: bool;
-    types_first: bool;
-    new_signatures: bool;
     wait_for_recheck: bool;
+    watchman_defer_states: string list;
+    watchman_mergebase_with: string option;
+    watchman_survive_restarts: bool option;
+    watchman_sync_timeout: int option;
     weak: bool;
   }
 
@@ -147,35 +158,41 @@ module Opts = struct
     |> SSet.add ".woff2"
     |> SSet.add ".mp4"
     |> SSet.add ".webm"
+    |> SSet.add ".webp"
+
+  let react_server_component_exts = SSet.empty
 
   let default_options =
     {
-      abstract_locations = false;
-      all = false;
-      automatic_require_default = false;
-      babel_loose_array_spread = false;
-      disable_live_non_parse_errors = false;
-      emoji = false;
+      abstract_locations = None;
+      all = None;
+      autoimports = None;
+      automatic_require_default = None;
+      babel_loose_array_spread = None;
+      check_updates_against_providers = false;
+      disable_live_non_parse_errors = None;
+      emoji = None;
       enable_const_params = false;
+      enforce_local_inference_annotations = false;
       enforce_strict_call_arity = true;
-      enforce_well_formed_exports = None;
-      enforce_well_formed_exports_includes = [];
       enums = false;
-      esproposal_class_instance_fields = Options.ESPROPOSAL_ENABLE;
-      esproposal_class_static_fields = Options.ESPROPOSAL_ENABLE;
-      esproposal_decorators = Options.ESPROPOSAL_WARN;
-      esproposal_export_star_as = Options.ESPROPOSAL_ENABLE;
-      esproposal_nullish_coalescing = Options.ESPROPOSAL_ENABLE;
-      esproposal_optional_chaining = Options.ESPROPOSAL_ENABLE;
+      enums_with_unknown_members = false;
       exact_by_default = false;
       facebook_fbs = None;
       facebook_fbt = None;
       facebook_module_interop = false;
       file_watcher = None;
       file_watcher_timeout = None;
-      watchman_sync_timeout = None;
-      watchman_defer_states = [];
-      watchman_mergebase_with = None;
+      format_bracket_spacing = None;
+      format_single_quotes = None;
+      gc_worker_custom_major_ratio = None;
+      gc_worker_custom_minor_max_size = None;
+      gc_worker_custom_minor_ratio = None;
+      gc_worker_major_heap_increment = None;
+      gc_worker_minor_heap_size = None;
+      gc_worker_space_overhead = None;
+      gc_worker_window_size = None;
+      generate_tests = false;
       haste_module_ref_prefix = None;
       haste_name_reducers =
         [(Str.regexp "^\\(.*/\\)?\\([a-zA-Z0-9$_.-]+\\)\\.js\\(\\.flow\\)?$", "\\2")];
@@ -184,13 +201,13 @@ module Opts = struct
       haste_use_name_reducers = false;
       ignore_non_literal_requires = false;
       include_warnings = false;
+      indexed_access = true;
       lazy_mode = None;
       log_file = None;
       max_files_checked_per_worker = 100;
       max_header_tokens = 10;
       max_literal_length = 100;
-      max_rss_bytes_for_check_per_worker = 200 * 1024 * 1024;
-      (* 200MB *)
+      max_rss_bytes_for_check_per_worker = (* 200MB *) 200 * 1024 * 1024;
       max_seconds_for_check_per_worker = 5.0;
       max_workers = Sys_utils.nbr_procs;
       merge_timeout = Some 100;
@@ -200,19 +217,22 @@ module Opts = struct
       module_system = Options.Node;
       modules_are_use_strict = false;
       munge_underscores = false;
-      new_signatures = false;
       no_flowlib = false;
       node_main_fields = ["main"];
       node_resolver_allow_root_relative = false;
       node_resolver_dirnames = ["node_modules"];
       node_resolver_root_relative_dirnames = [""];
       react_runtime = Options.ReactRuntimeClassic;
+      react_server_component_exts;
       recursion_limit = 10000;
+      refactor = None;
+      reorder_checking = Options.Lexical;
       root_name = None;
+      run_post_inference_implicit_instantiation = false;
       saved_state_fetcher = Options.Dummy_fetcher;
+      saved_state_load_sighashes = false;
       shm_hash_table_pow = 19;
-      shm_heap_size = 1024 * 1024 * 1024 * 25;
-      (* 25 gigs *)
+      shm_heap_size = (* 25GB *) 1024 * 1024 * 1024 * 25;
       shm_log_level = 0;
       strict_es6_import_export = false;
       strict_es6_import_export_excludes = [];
@@ -221,8 +241,11 @@ module Opts = struct
       traces = 0;
       trust_mode = Options.NoTrust;
       type_asserts = false;
-      types_first = true;
       wait_for_recheck = false;
+      watchman_defer_states = [];
+      watchman_mergebase_with = None;
+      watchman_survive_restarts = None;
+      watchman_sync_timeout = None;
       weak = false;
     }
 
@@ -238,11 +261,11 @@ module Opts = struct
           let map =
             SMap.add
               key
-              ( (line_num, value)
-              ::
-              (match SMap.find_opt key map with
-              | Some values -> values
-              | None -> []) )
+              ((line_num, value)
+               ::
+               (match SMap.find_opt key map with
+               | Some values -> values
+               | None -> []))
               map
           in
           loop (Ok map) rest
@@ -287,21 +310,20 @@ module Opts = struct
         ?(multiple = false)
         (setter : t -> 'a -> (t, string) result)
         (values : raw_values)
-        config ->
-      ( let config =
-          match init with
-          | None -> config
-          | Some f -> f config
-        in
-        (* Error when duplicate options were incorrectly given *)
-        match (multiple, values) with
-        | (false, _ :: (dupe_ln, _) :: _) -> Error (dupe_ln, Duplicate_option)
-        | _ -> loop optparser setter values config
-        : (t, opt_error) result )
+        config : (t, opt_error) result ->
+      let config =
+        match init with
+        | None -> config
+        | Some f -> f config
+      in
+      (* Error when duplicate options were incorrectly given *)
+      match (multiple, values) with
+      | (false, _ :: (dupe_ln, _) :: _) -> Error (dupe_ln, Duplicate_option)
+      | _ -> loop optparser setter values config
 
   let optparse_string str =
-    try Ok (Scanf.unescaped str)
-    with Scanf.Scan_failure reason -> Error (spf "Invalid ocaml string: %s" reason)
+    try Ok (Scanf.unescaped str) with
+    | Scanf.Scan_failure reason -> Error (spf "Invalid ocaml string: %s" reason)
 
   let enum values =
     opt (fun str ->
@@ -314,16 +336,6 @@ module Opts = struct
                "Unsupported value: \"%s\". Supported values are: %s"
                str
                (String.concat ", " (SMap.keys values))))
-
-  let esproposal_feature_flag ?(allow_enable = false) =
-    let values = [("ignore", Options.ESPROPOSAL_IGNORE); ("warn", Options.ESPROPOSAL_WARN)] in
-    let values =
-      if allow_enable then
-        ("enable", Options.ESPROPOSAL_ENABLE) :: values
-      else
-        values
-    in
-    enum values
 
   let filepath = opt (fun str -> Ok (Path.make str))
 
@@ -349,47 +361,45 @@ module Opts = struct
 
   let mapping fn = opt (fun str -> optparse_mapping str >>= fn)
 
-  let well_formed_exports_parser =
-    boolean (fun opts v -> Ok { opts with enforce_well_formed_exports = Some v })
-
-  let well_formed_exports_includes_parser =
-    string
-      ~init:(fun opts -> { opts with enforce_well_formed_exports_includes = [] })
-      ~multiple:true
-      (fun opts v ->
-        if Base.Option.value ~default:false opts.enforce_well_formed_exports then
-          Ok
-            {
-              opts with
-              enforce_well_formed_exports_includes = v :: opts.enforce_well_formed_exports_includes;
-            }
-        else
-          Error "This option requires \"well_formed_exports\" set to \"true\".")
-
-  let types_first_parser =
+  (* TODO: remove once .flowconfigs no longer use this setting *)
+  let new_check_parser =
     boolean (fun opts v ->
-        if v && opts.enforce_well_formed_exports = Some false then
-          Error "Cannot set it to \"true\" when \"well_formed_exports\" is set to \"false\"."
-        else if v && opts.enforce_well_formed_exports_includes <> [] then
-          Error "Cannot set it to \"true\" when \"well_formed_exports.includes\" is set."
+        if v then
+          Ok opts
         else
-          Ok { opts with types_first = v })
+          Error "New check mode can no longer be disabled.")
 
-  let new_signatures_parser =
-    boolean (fun opts v ->
-        if v && not opts.types_first then
-          Error "Cannot set it to \"true\" when \"types_first\" is set to \"false\"."
-        else
-          Ok { opts with new_signatures = v })
-
-  let types_first_max_files_checked_per_worker_parser =
+  let max_files_checked_per_worker_parser =
     uint (fun opts v -> Ok { opts with max_files_checked_per_worker = v })
 
-  let types_first_max_seconds_for_check_per_worker_parser =
+  let max_seconds_for_check_per_worker_parser =
     uint (fun opts v -> Ok { opts with max_seconds_for_check_per_worker = float v })
 
-  let types_first_max_rss_bytes_for_check_per_worker_parser =
+  let max_rss_bytes_for_check_per_worker_parser =
     uint (fun opts v -> Ok { opts with max_rss_bytes_for_check_per_worker = v })
+
+  let file_ext_parser =
+    string
+      ~init:(fun opts -> { opts with module_file_exts = SSet.empty })
+      ~multiple:true
+      (fun opts v ->
+        if String_utils.string_ends_with v Files.flow_ext then
+          Error
+            ("Cannot use file extension '"
+            ^ v
+            ^ "' since it ends with the reserved extension '"
+            ^ Files.flow_ext
+            ^ "'")
+        else
+          let module_file_exts = SSet.add v opts.module_file_exts in
+          Ok { opts with module_file_exts })
+
+  let haste_name_reducers_parser =
+    mapping
+      ~init:(fun opts -> { opts with haste_name_reducers = [] })
+      ~multiple:true
+      (fun (pattern, template) -> Ok (Str.regexp pattern, template))
+      (fun opts v -> Ok { opts with haste_name_reducers = v :: opts.haste_name_reducers })
 
   let haste_paths_excludes_parser =
     string
@@ -403,6 +413,189 @@ module Opts = struct
       ~multiple:true
       (fun opts v -> Ok { opts with haste_paths_includes = v :: opts.haste_paths_includes })
 
+  let local_inference_annotations =
+    boolean (fun opts v -> Ok { opts with enforce_local_inference_annotations = v })
+
+  let check_updates_against_providers =
+    boolean (fun opts v -> Ok { opts with check_updates_against_providers = v })
+
+  let reorder_checking_parser =
+    enum
+      [
+        ("lexical", Options.Lexical);
+        ("dependency", Options.Dependency);
+        ("lexical_with_dependency_validation", Options.LexicalWithDependencyValidation);
+      ]
+      (fun opts v -> Ok { opts with reorder_checking = v })
+
+  let post_inference_implicit_instantiation_parser =
+    boolean (fun opts v -> Ok { opts with run_post_inference_implicit_instantiation = v })
+
+  let abstract_locations_parser =
+    boolean (fun opts v -> Ok { opts with abstract_locations = Some v })
+
+  let automatic_require_default_parser =
+    boolean (fun opts v -> Ok { opts with automatic_require_default = Some v })
+
+  let babel_loose_array_spread_parser =
+    boolean (fun opts v -> Ok { opts with babel_loose_array_spread = Some v })
+
+  let disable_live_non_parse_errors_parser =
+    boolean (fun opts v -> Ok { opts with disable_live_non_parse_errors = Some v })
+
+  let enforce_strict_call_arity_parser =
+    boolean (fun opts v -> Ok { opts with enforce_strict_call_arity = v })
+
+  let enums_with_unknown_members_parser =
+    boolean (fun opts v -> Ok { opts with enums_with_unknown_members = v })
+
+  let facebook_module_interop_parser =
+    boolean (fun opts v -> Ok { opts with facebook_module_interop = v })
+
+  let file_watcher_parser =
+    enum [("none", NoFileWatcher); ("dfind", DFind); ("watchman", Watchman)] (fun opts v ->
+        Ok { opts with file_watcher = Some v })
+
+  let format_bracket_spacing_parser =
+    boolean (fun opts v -> Ok { opts with format_bracket_spacing = Some v })
+
+  let format_single_quotes_parser =
+    boolean (fun opts v -> Ok { opts with format_single_quotes = Some v })
+
+  let haste_module_ref_prefix_parser =
+    string (fun opts v -> Ok { opts with haste_module_ref_prefix = Some v })
+
+  let haste_use_name_reducers_parser =
+    boolean
+      ~init:(fun opts -> { opts with haste_use_name_reducers = false })
+      (fun opts v -> Ok { opts with haste_use_name_reducers = v })
+
+  let gc_worker_major_heap_increment_parser =
+    uint (fun opts v -> Ok { opts with gc_worker_major_heap_increment = Some v })
+
+  let gc_worker_minor_heap_size_parser =
+    uint (fun opts v -> Ok { opts with gc_worker_minor_heap_size = Some v })
+
+  let gc_worker_space_overhead_parser =
+    uint (fun opts v -> Ok { opts with gc_worker_space_overhead = Some v })
+
+  let gc_worker_window_size_parser =
+    uint (fun opts v -> Ok { opts with gc_worker_window_size = Some v })
+
+  let gc_worker_custom_major_ratio_parser =
+    uint (fun opts v -> Ok { opts with gc_worker_custom_major_ratio = Some v })
+
+  let gc_worker_custom_minor_ratio_parser =
+    uint (fun opts v -> Ok { opts with gc_worker_custom_minor_ratio = Some v })
+
+  let gc_worker_custom_minor_max_size_parser =
+    uint (fun opts v -> Ok { opts with gc_worker_custom_minor_max_size = Some v })
+
+  let ignore_non_literal_requires_parser =
+    boolean (fun opts v -> Ok { opts with ignore_non_literal_requires = v })
+
+  let lazy_mode_parser =
+    enum
+      [
+        ("fs", Options.LAZY_MODE_FILESYSTEM);
+        ("ide", Options.LAZY_MODE_IDE);
+        ("watchman", Options.LAZY_MODE_WATCHMAN);
+        ("none", Options.NON_LAZY_MODE);
+      ]
+      (fun opts v -> Ok { opts with lazy_mode = Some v })
+
+  let merge_timeout_parser =
+    uint (fun opts v ->
+        let merge_timeout =
+          if v = 0 then
+            None
+          else
+            Some v
+        in
+        Ok { opts with merge_timeout })
+
+  let module_system_parser =
+    enum [("node", Options.Node); ("haste", Options.Haste)] (fun opts v ->
+        Ok { opts with module_system = v })
+
+  let name_mapper_parser =
+    mapping
+      ~multiple:true
+      (fun (pattern, template) -> Ok (Str.regexp pattern, template))
+      (fun opts v ->
+        let module_name_mappers = v :: opts.module_name_mappers in
+        Ok { opts with module_name_mappers })
+
+  let name_mapper_extension_parser =
+    mapping
+      ~multiple:true
+      (fun (file_ext, template) ->
+        Ok (Str.regexp ("^\\(.*\\)\\." ^ Str.quote file_ext ^ "$"), template))
+      (fun opts v ->
+        let module_name_mappers = v :: opts.module_name_mappers in
+        Ok { opts with module_name_mappers })
+
+  let node_main_field_parser =
+    string
+      ~init:(fun opts -> { opts with node_main_fields = [] })
+      ~multiple:true
+      (fun opts v ->
+        let node_main_fields = v :: opts.node_main_fields in
+        Ok { opts with node_main_fields })
+
+  let node_resolve_dirname_parser =
+    string
+      ~init:(fun opts -> { opts with node_resolver_dirnames = [] })
+      ~multiple:true
+      (fun opts v ->
+        if v = Filename.current_dir_name || v = Filename.parent_dir_name then
+          Error
+            (spf
+               "%S is not a valid value for `module.system.node.resolve_dirname`. Each value must be a valid directory name. Maybe try `module.system.node.allow_root_relative=true`?"
+               v)
+        else
+          let node_resolver_dirnames = v :: opts.node_resolver_dirnames in
+          Ok { opts with node_resolver_dirnames })
+
+  let node_resolver_allow_root_relative_parser =
+    boolean (fun opts v -> Ok { opts with node_resolver_allow_root_relative = v })
+
+  let node_resolver_root_relative_dirnames_parser =
+    string
+      ~init:(fun opts -> { opts with node_resolver_root_relative_dirnames = [] })
+      ~multiple:true
+      (fun opts v ->
+        let node_resolver_root_relative_dirnames = v :: opts.node_resolver_root_relative_dirnames in
+        Ok { opts with node_resolver_root_relative_dirnames })
+
+  let react_runtime_parser =
+    enum
+      [("classic", Options.ReactRuntimeClassic); ("automatic", Options.ReactRuntimeAutomatic)]
+      (fun opts react_runtime -> Ok { opts with react_runtime })
+
+  let react_server_component_exts_parser =
+    string
+      ~init:(fun opts -> { opts with react_server_component_exts = SSet.empty })
+      ~multiple:true
+      (fun opts v ->
+        let react_server_component_exts = SSet.add v opts.react_server_component_exts in
+        Ok { opts with react_server_component_exts })
+
+  let root_name_parser =
+    string (fun opts v ->
+        FlowEventLogger.set_root_name (Some v);
+        Ok { opts with root_name = Some v })
+
+  let saved_state_fetcher_parser =
+    enum
+      [
+        ("none", Options.Dummy_fetcher); ("local", Options.Local_fetcher); ("fb", Options.Fb_fetcher);
+      ]
+      (fun opts saved_state_fetcher -> Ok { opts with saved_state_fetcher })
+
+  let shm_hash_table_pow_parser =
+    uint (fun opts shm_hash_table_pow -> Ok { opts with shm_hash_table_pow })
+
   let strict_es6_import_export_excludes_parser =
     string
       ~init:(fun opts -> { opts with strict_es6_import_export_excludes = [] })
@@ -414,210 +607,119 @@ module Opts = struct
             strict_es6_import_export_excludes = v :: opts.strict_es6_import_export_excludes;
           })
 
+  let strict_es6_import_export_parser =
+    boolean (fun opts v -> Ok { opts with strict_es6_import_export = v })
+
+  let suppress_types_parser =
+    string
+      ~init:(fun opts -> { opts with suppress_types = SSet.empty })
+      ~multiple:true
+      (fun opts v -> Ok { opts with suppress_types = SSet.add v opts.suppress_types })
+
+  let trust_mode_parser =
+    enum
+      [("check", Options.CheckTrust); ("silent", Options.SilentTrust); ("none", Options.NoTrust)]
+      (fun opts trust_mode -> Ok { opts with trust_mode })
+
+  let watchman_defer_states_parser =
+    string ~multiple:true (fun opts v ->
+        Ok { opts with watchman_defer_states = v :: opts.watchman_defer_states })
+
+  let watchman_mergebase_with_parser =
+    string (fun opts v -> Ok { opts with watchman_mergebase_with = Some v })
+
+  let watchman_survive_restarts_parser =
+    boolean (fun opts v -> Ok { opts with watchman_survive_restarts = Some v })
+
+  let watchman_sync_timeout_parser =
+    uint (fun opts v -> Ok { opts with watchman_sync_timeout = Some v })
+
   let parsers =
     [
-      ("emoji", boolean (fun opts v -> Ok { opts with emoji = v }));
-      ( "esproposal.class_instance_fields",
-        esproposal_feature_flag ~allow_enable:true (fun opts v ->
-            Ok { opts with esproposal_class_instance_fields = v }) );
-      ( "esproposal.class_static_fields",
-        esproposal_feature_flag ~allow_enable:true (fun opts v ->
-            Ok { opts with esproposal_class_static_fields = v }) );
-      ( "esproposal.decorators",
-        esproposal_feature_flag (fun opts v -> Ok { opts with esproposal_decorators = v }) );
-      ( "esproposal.export_star_as",
-        esproposal_feature_flag ~allow_enable:true (fun opts v ->
-            Ok { opts with esproposal_export_star_as = v }) );
-      ( "esproposal.optional_chaining",
-        esproposal_feature_flag ~allow_enable:true (fun opts v ->
-            Ok { opts with esproposal_optional_chaining = v }) );
-      ( "esproposal.nullish_coalescing",
-        esproposal_feature_flag ~allow_enable:true (fun opts v ->
-            Ok { opts with esproposal_nullish_coalescing = v }) );
+      ("all", boolean (fun opts v -> Ok { opts with all = Some v }));
+      ("autoimports", boolean (fun opts v -> Ok { opts with autoimports = Some v }));
+      ("babel_loose_array_spread", babel_loose_array_spread_parser);
+      ("emoji", boolean (fun opts v -> Ok { opts with emoji = Some v }));
       ("exact_by_default", boolean (fun opts v -> Ok { opts with exact_by_default = v }));
+      ("experimental.abstract_locations", abstract_locations_parser);
+      ("experimental.const_params", boolean (fun opts v -> Ok { opts with enable_const_params = v }));
+      ("experimental.disable_live_non_parse_errors", disable_live_non_parse_errors_parser);
+      ("experimental.enforce_local_inference_annotations", local_inference_annotations);
+      ("experimental.check_updates_against_providers", check_updates_against_providers);
+      ("experimental.enums_with_unknown_members", enums_with_unknown_members_parser);
+      ("experimental.enums", boolean (fun opts v -> Ok { opts with enums = v }));
+      ("experimental.facebook_module_interop", facebook_module_interop_parser);
+      ("experimental.module.automatic_require_default", automatic_require_default_parser);
+      ("experimental.new_check", new_check_parser);
+      ("experimental.react.server_component_ext", react_server_component_exts_parser);
+      ("experimental.refactor", boolean (fun opts v -> Ok { opts with refactor = Some v }));
+      ("experimental.reorder_checking", reorder_checking_parser);
+      ( "experimental.run_post_inference_implicit_instantiation",
+        post_inference_implicit_instantiation_parser );
+      ("experimental.strict_call_arity", enforce_strict_call_arity_parser);
+      ("experimental.strict_es6_import_export.excludes", strict_es6_import_export_excludes_parser);
+      ("experimental.strict_es6_import_export", strict_es6_import_export_parser);
+      ("experimental.type_asserts", boolean (fun opts v -> Ok { opts with type_asserts = v }));
       ("facebook.fbs", string (fun opts v -> Ok { opts with facebook_fbs = Some v }));
       ("facebook.fbt", string (fun opts v -> Ok { opts with facebook_fbt = Some v }));
-      ( "file_watcher",
-        enum [("none", NoFileWatcher); ("dfind", DFind); ("watchman", Watchman)] (fun opts v ->
-            Ok { opts with file_watcher = Some v }) );
       ("file_watcher_timeout", uint (fun opts v -> Ok { opts with file_watcher_timeout = Some v }));
-      ( "file_watcher.watchman.sync_timeout",
-        uint (fun opts v -> Ok { opts with watchman_sync_timeout = Some v }) );
-      ( "file_watcher.watchman.defer_state",
-        string ~multiple:true (fun opts v ->
-            Ok { opts with watchman_defer_states = v :: opts.watchman_defer_states }) );
-      ( "file_watcher.watchman.mergebase_with",
-        string (fun opts v -> Ok { opts with watchman_mergebase_with = Some v }) );
+      ("file_watcher.watchman.defer_state", watchman_defer_states_parser);
+      ("file_watcher.watchman.mergebase_with", watchman_mergebase_with_parser);
+      ("file_watcher.watchman.survive_restarts", watchman_survive_restarts_parser);
+      ("file_watcher.watchman.sync_timeout", watchman_sync_timeout_parser);
+      ("file_watcher", file_watcher_parser);
+      ("format.bracket_spacing", format_bracket_spacing_parser);
+      ("format.single_quotes", format_single_quotes_parser);
+      ("gc.worker.custom_major_ratio", gc_worker_custom_major_ratio_parser);
+      ("gc.worker.custom_minor_max_size", gc_worker_custom_minor_max_size_parser);
+      ("gc.worker.custom_minor_ratio", gc_worker_custom_minor_ratio_parser);
+      ("gc.worker.major_heap_increment", gc_worker_major_heap_increment_parser);
+      ("gc.worker.minor_heap_size", gc_worker_minor_heap_size_parser);
+      ("gc.worker.space_overhead", gc_worker_space_overhead_parser);
+      ("gc.worker.window_size", gc_worker_window_size_parser);
       ("include_warnings", boolean (fun opts v -> Ok { opts with include_warnings = v }));
-      ( "lazy_mode",
-        enum
-          [
-            ("fs", Options.LAZY_MODE_FILESYSTEM);
-            ("ide", Options.LAZY_MODE_IDE);
-            ("watchman", Options.LAZY_MODE_WATCHMAN);
-            ("none", Options.NON_LAZY_MODE);
-          ]
-          (fun opts v -> Ok { opts with lazy_mode = Some v }) );
-      ( "merge_timeout",
-        uint (fun opts v ->
-            let merge_timeout =
-              if v = 0 then
-                None
-              else
-                Some v
-            in
-            Ok { opts with merge_timeout }) );
-      ( "module.system.haste.module_ref_prefix",
-        string (fun opts v -> Ok { opts with haste_module_ref_prefix = Some v }) );
-      ( "module.system.haste.name_reducers",
-        mapping
-          ~init:(fun opts -> { opts with haste_name_reducers = [] })
-          ~multiple:true
-          (fun (pattern, template) -> Ok (Str.regexp pattern, template))
-          (fun opts v -> Ok { opts with haste_name_reducers = v :: opts.haste_name_reducers }) );
-      ("module.system.haste.paths.excludes", haste_paths_excludes_parser);
-      ("module.system.haste.paths.includes", haste_paths_includes_parser);
-      ( "module.system.haste.use_name_reducers",
-        boolean
-          ~init:(fun opts -> { opts with haste_use_name_reducers = false })
-          (fun opts v -> Ok { opts with haste_use_name_reducers = v }) );
+      ("indexed_access", boolean (fun opts v -> Ok { opts with indexed_access = v }));
+      ("lazy_mode", lazy_mode_parser);
       ("log.file", filepath (fun opts v -> Ok { opts with log_file = Some v }));
       ("max_header_tokens", uint (fun opts v -> Ok { opts with max_header_tokens = v }));
-      ( "module.ignore_non_literal_requires",
-        boolean (fun opts v -> Ok { opts with ignore_non_literal_requires = v }) );
-      ( "module.file_ext",
-        string
-          ~init:(fun opts -> { opts with module_file_exts = SSet.empty })
-          ~multiple:true
-          (fun opts v ->
-            if String_utils.string_ends_with v Files.flow_ext then
-              Error
-                ( "Cannot use file extension '"
-                ^ v
-                ^ "' since it ends with the reserved extension '"
-                ^ Files.flow_ext
-                ^ "'" )
-            else
-              let module_file_exts = SSet.add v opts.module_file_exts in
-              Ok { opts with module_file_exts }) );
-      ( "module.name_mapper",
-        mapping
-          ~multiple:true
-          (fun (pattern, template) -> Ok (Str.regexp pattern, template))
-          (fun opts v ->
-            let module_name_mappers = v :: opts.module_name_mappers in
-            Ok { opts with module_name_mappers }) );
-      ( "module.name_mapper.extension",
-        mapping
-          ~multiple:true
-          (fun (file_ext, template) ->
-            Ok (Str.regexp ("^\\(.*\\)\\." ^ Str.quote file_ext ^ "$"), template))
-          (fun opts v ->
-            let module_name_mappers = v :: opts.module_name_mappers in
-            Ok { opts with module_name_mappers }) );
-      ( "module.system",
-        enum [("node", Options.Node); ("haste", Options.Haste)] (fun opts v ->
-            Ok { opts with module_system = v }) );
-      ( "module.system.node.main_field",
-        string
-          ~init:(fun opts -> { opts with node_main_fields = [] })
-          ~multiple:true
-          (fun opts v ->
-            let node_main_fields = v :: opts.node_main_fields in
-            Ok { opts with node_main_fields }) );
-      ( "module.system.node.allow_root_relative",
-        boolean (fun opts v -> Ok { opts with node_resolver_allow_root_relative = v }) );
-      ( "module.system.node.resolve_dirname",
-        string
-          ~init:(fun opts -> { opts with node_resolver_dirnames = [] })
-          ~multiple:true
-          (fun opts v ->
-            if v = Filename.current_dir_name || v = Filename.parent_dir_name then
-              Error
-                (spf
-                   "%S is not a valid value for `module.system.node.resolve_dirname`. Each value must be a valid directory name. Maybe try `module.system.node.allow_root_relative=true`?"
-                   v)
-            else
-              let node_resolver_dirnames = v :: opts.node_resolver_dirnames in
-              Ok { opts with node_resolver_dirnames }) );
-      ( "module.system.node.root_relative_dirname",
-        string
-          ~init:(fun opts -> { opts with node_resolver_root_relative_dirnames = [] })
-          ~multiple:true
-          (fun opts v ->
-            let node_resolver_root_relative_dirnames =
-              v :: opts.node_resolver_root_relative_dirnames
-            in
-            Ok { opts with node_resolver_root_relative_dirnames }) );
+      ("max_literal_length", uint (fun opts v -> Ok { opts with max_literal_length = v }));
+      ("merge_timeout", merge_timeout_parser);
+      ("module.file_ext", file_ext_parser);
+      ("module.ignore_non_literal_requires", ignore_non_literal_requires_parser);
+      ("module.name_mapper.extension", name_mapper_extension_parser);
+      ("module.name_mapper", name_mapper_parser);
+      ("module.system.haste.module_ref_prefix", haste_module_ref_prefix_parser);
+      ("module.system.haste.name_reducers", haste_name_reducers_parser);
+      ("module.system.haste.paths.excludes", haste_paths_excludes_parser);
+      ("module.system.haste.paths.includes", haste_paths_includes_parser);
+      ("module.system.haste.use_name_reducers", haste_use_name_reducers_parser);
+      ("module.system.node.allow_root_relative", node_resolver_allow_root_relative_parser);
+      ("module.system.node.main_field", node_main_field_parser);
+      ("module.system.node.resolve_dirname", node_resolve_dirname_parser);
+      ("module.system.node.root_relative_dirname", node_resolver_root_relative_dirnames_parser);
+      ("module.system", module_system_parser);
       ("module.use_strict", boolean (fun opts v -> Ok { opts with modules_are_use_strict = v }));
       ("munge_underscores", boolean (fun opts v -> Ok { opts with munge_underscores = v }));
-      ( "name",
-        string (fun opts v ->
-            FlowEventLogger.set_root_name (Some v);
-            Ok { opts with root_name = Some v }) );
+      ("name", root_name_parser);
+      ("no_flowlib", boolean (fun opts v -> Ok { opts with no_flowlib = v }));
+      ("react.runtime", react_runtime_parser);
+      ("recursion_limit", uint (fun opts v -> Ok { opts with recursion_limit = v }));
+      ("saved_state.fetcher", saved_state_fetcher_parser);
+      ( "saved_state.load_sighashes",
+        boolean (fun opts v -> Ok { opts with saved_state_load_sighashes = v }) );
       ("server.max_workers", uint (fun opts v -> Ok { opts with max_workers = v }));
-      ("all", boolean (fun opts v -> Ok { opts with all = v }));
-      ( "babel_loose_array_spread",
-        boolean (fun opts v -> Ok { opts with babel_loose_array_spread = v }) );
-      ("wait_for_recheck", boolean (fun opts v -> Ok { opts with wait_for_recheck = v }));
-      ("weak", boolean (fun opts v -> Ok { opts with weak = v }));
-      ( "suppress_type",
-        string
-          ~init:(fun opts -> { opts with suppress_types = SSet.empty })
-          ~multiple:true
-          (fun opts v -> Ok { opts with suppress_types = SSet.add v opts.suppress_types }) );
-      ("temp_dir", string (fun opts v -> Ok { opts with temp_dir = v }));
-      ( "saved_state.fetcher",
-        enum
-          [
-            ("none", Options.Dummy_fetcher);
-            ("local", Options.Local_fetcher);
-            ("fb", Options.Fb_fetcher);
-          ]
-          (fun opts saved_state_fetcher -> Ok { opts with saved_state_fetcher }) );
-      ( "sharedmemory.hash_table_pow",
-        uint (fun opts shm_hash_table_pow -> Ok { opts with shm_hash_table_pow }) );
+      ("sharedmemory.hash_table_pow", shm_hash_table_pow_parser);
       ("sharedmemory.heap_size", uint (fun opts shm_heap_size -> Ok { opts with shm_heap_size }));
       ("sharedmemory.log_level", uint (fun opts shm_log_level -> Ok { opts with shm_log_level }));
+      ("suppress_type", suppress_types_parser);
+      ("temp_dir", string (fun opts v -> Ok { opts with temp_dir = v }));
       ("traces", uint (fun opts v -> Ok { opts with traces = v }));
-      ("max_literal_length", uint (fun opts v -> Ok { opts with max_literal_length = v }));
-      ("experimental.const_params", boolean (fun opts v -> Ok { opts with enable_const_params = v }));
-      ("experimental.enums", boolean (fun opts v -> Ok { opts with enums = v }));
-      ( "experimental.strict_call_arity",
-        boolean (fun opts v -> Ok { opts with enforce_strict_call_arity = v }) );
-      ("well_formed_exports", well_formed_exports_parser);
-      ("well_formed_exports.includes", well_formed_exports_includes_parser);
-      ("experimental.type_asserts", boolean (fun opts v -> Ok { opts with type_asserts = v }));
-      ("types_first", types_first_parser);
-      ("experimental.new_signatures", new_signatures_parser);
-      ( "experimental.abstract_locations",
-        boolean (fun opts v -> Ok { opts with abstract_locations = v }) );
-      ( "experimental.disable_live_non_parse_errors",
-        boolean (fun opts v -> Ok { opts with disable_live_non_parse_errors = v }) );
-      ("no_flowlib", boolean (fun opts v -> Ok { opts with no_flowlib = v }));
-      ( "trust_mode",
-        enum
-          [
-            ("check", Options.CheckTrust); ("silent", Options.SilentTrust); ("none", Options.NoTrust);
-          ]
-          (fun opts trust_mode -> Ok { opts with trust_mode }) );
-      ( "react.runtime",
-        enum
-          [("classic", Options.ReactRuntimeClassic); ("automatic", Options.ReactRuntimeAutomatic)]
-          (fun opts react_runtime -> Ok { opts with react_runtime }) );
-      ("recursion_limit", uint (fun opts v -> Ok { opts with recursion_limit = v }));
-      ("types_first.max_files_checked_per_worker", types_first_max_files_checked_per_worker_parser);
-      ( "types_first.max_seconds_for_check_per_worker",
-        types_first_max_seconds_for_check_per_worker_parser );
-      ( "types_first.max_rss_bytes_for_check_per_worker",
-        types_first_max_rss_bytes_for_check_per_worker_parser );
-      ( "experimental.strict_es6_import_export",
-        boolean (fun opts v -> Ok { opts with strict_es6_import_export = v }) );
-      ("experimental.strict_es6_import_export.excludes", strict_es6_import_export_excludes_parser);
-      ( "experimental.module.automatic_require_default",
-        boolean (fun opts v -> Ok { opts with automatic_require_default = v }) );
-      ( "experimental.facebook_module_interop",
-        boolean (fun opts v -> Ok { opts with facebook_module_interop = v }) );
+      ("trust_mode", trust_mode_parser);
+      ("types_first.max_files_checked_per_worker", max_files_checked_per_worker_parser);
+      ("types_first.max_rss_bytes_for_check_per_worker", max_rss_bytes_for_check_per_worker_parser);
+      ("types_first.max_seconds_for_check_per_worker", max_seconds_for_check_per_worker_parser);
+      ("wait_for_recheck", boolean (fun opts v -> Ok { opts with wait_for_recheck = v }));
+      ("weak", boolean (fun opts v -> Ok { opts with weak = v }));
     ]
 
   let parse =
@@ -647,10 +749,9 @@ module Opts = struct
         in
         loop acc rest
     in
-    fun (init : t) (lines : line list) ->
-      ( parse_lines lines >>= fun raw_options ->
-        loop (Ok (raw_options, init)) parsers >>= warn_on_unknown_opts
-        : (t * warning list, error) result )
+    fun (init : t) (lines : line list) : (t * warning list, error) result ->
+      parse_lines lines >>= fun raw_options ->
+      loop (Ok (raw_options, init)) parsers >>= warn_on_unknown_opts
 end
 
 type rollout = {
@@ -680,6 +781,8 @@ type config = {
   version: string option;
 }
 
+type config_result = (config * warning list, error) result
+
 module Pp : sig
   val config : out_channel -> config -> unit
 end = struct
@@ -708,7 +811,8 @@ end = struct
         let options = config.options in
         if options.module_system <> default_options.module_system then
           pp_opt o "module.system" (module_system options.module_system);
-        if options.all <> default_options.all then pp_opt o "all" (string_of_bool options.all);
+        if options.all <> default_options.all then
+          pp_opt o "all" (string_of_bool (Base.Option.value options.all ~default:false));
         if options.weak <> default_options.weak then pp_opt o "weak" (string_of_bool options.weak);
         if options.temp_dir <> default_options.temp_dir then pp_opt o "temp_dir" options.temp_dir;
         if options.include_warnings <> default_options.include_warnings then
@@ -1110,6 +1214,10 @@ let get_hash ?allow_cache filename =
   let (_, _, hash) = get_from_cache ?allow_cache filename in
   hash
 
+let get_with_hash ?allow_cache filename =
+  let (_, config, hash) = get_from_cache ?allow_cache filename in
+  (config, hash)
+
 (* Accessors *)
 
 let enabled_rollouts config = SMap.map (fun { enabled_group; _ } -> enabled_group) config.rollouts
@@ -1134,39 +1242,33 @@ let abstract_locations c = c.options.Opts.abstract_locations
 
 let all c = c.options.Opts.all
 
+let autoimports c = c.options.Opts.autoimports
+
 let automatic_require_default c = c.options.Opts.automatic_require_default
 
 let babel_loose_array_spread c = c.options.Opts.babel_loose_array_spread
 
 let disable_live_non_parse_errors c = c.options.Opts.disable_live_non_parse_errors
 
+let check_updates_against_providers c = c.options.Opts.check_updates_against_providers
+
 let emoji c = c.options.Opts.emoji
+
+let format_bracket_spacing c = c.options.Opts.format_bracket_spacing
+
+let format_single_quotes c = c.options.Opts.format_single_quotes
 
 let max_literal_length c = c.options.Opts.max_literal_length
 
 let enable_const_params c = c.options.Opts.enable_const_params
 
+let enforce_local_inference_annotations c = c.options.Opts.enforce_local_inference_annotations
+
 let enforce_strict_call_arity c = c.options.Opts.enforce_strict_call_arity
-
-let enforce_well_formed_exports c =
-  c.options.Opts.types_first
-  || Base.Option.value ~default:false c.options.Opts.enforce_well_formed_exports
-
-let enforce_well_formed_exports_includes c = c.options.Opts.enforce_well_formed_exports_includes
 
 let enums c = c.options.Opts.enums
 
-let esproposal_class_instance_fields c = c.options.Opts.esproposal_class_instance_fields
-
-let esproposal_class_static_fields c = c.options.Opts.esproposal_class_static_fields
-
-let esproposal_decorators c = c.options.Opts.esproposal_decorators
-
-let esproposal_export_star_as c = c.options.Opts.esproposal_export_star_as
-
-let esproposal_optional_chaining c = c.options.Opts.esproposal_optional_chaining
-
-let esproposal_nullish_coalescing c = c.options.Opts.esproposal_nullish_coalescing
+let enums_with_unknown_members c = c.options.Opts.enums_with_unknown_members
 
 let exact_by_default c = c.options.Opts.exact_by_default
 
@@ -1179,6 +1281,8 @@ let watchman_sync_timeout c = c.options.Opts.watchman_sync_timeout
 let watchman_defer_states c = c.options.Opts.watchman_defer_states
 
 let watchman_mergebase_with c = c.options.Opts.watchman_mergebase_with
+
+let watchman_survive_restarts c = c.options.Opts.watchman_survive_restarts
 
 let facebook_fbs c = c.options.Opts.facebook_fbs
 
@@ -1199,6 +1303,8 @@ let haste_use_name_reducers c = c.options.Opts.haste_use_name_reducers
 let ignore_non_literal_requires c = c.options.Opts.ignore_non_literal_requires
 
 let include_warnings c = c.options.Opts.include_warnings
+
+let indexed_access c = c.options.Opts.indexed_access
 
 let lazy_mode c = c.options.Opts.lazy_mode
 
@@ -1240,11 +1346,17 @@ let node_resolver_root_relative_dirnames c = c.options.Opts.node_resolver_root_r
 
 let react_runtime c = c.options.Opts.react_runtime
 
+let react_server_component_exts c = c.options.Opts.react_server_component_exts
+
 let recursion_limit c = c.options.Opts.recursion_limit
+
+let refactor c = c.options.Opts.refactor
 
 let root_name c = c.options.Opts.root_name
 
 let saved_state_fetcher c = c.options.Opts.saved_state_fetcher
+
+let saved_state_load_sighashes c = c.options.Opts.saved_state_load_sighashes
 
 let shm_hash_table_pow c = c.options.Opts.shm_hash_table_pow
 
@@ -1266,11 +1378,12 @@ let trust_mode c = c.options.Opts.trust_mode
 
 let type_asserts c = c.options.Opts.type_asserts
 
-let types_first c = c.options.Opts.types_first
-
-let new_signatures c = c.options.Opts.new_signatures
-
 let required_version c = c.version
+
+let reorder_checking c = c.options.Opts.reorder_checking
+
+let run_post_inference_implicit_instantiation c =
+  c.options.Opts.run_post_inference_implicit_instantiation
 
 let wait_for_recheck c = c.options.Opts.wait_for_recheck
 
@@ -1280,3 +1393,17 @@ let weak c = c.options.Opts.weak
 let lint_severities c = c.lint_severities
 
 let strict_mode c = c.strict_mode
+
+let gc_worker_minor_heap_size c = c.options.Opts.gc_worker_minor_heap_size
+
+let gc_worker_major_heap_increment c = c.options.Opts.gc_worker_major_heap_increment
+
+let gc_worker_space_overhead c = c.options.Opts.gc_worker_space_overhead
+
+let gc_worker_window_size c = c.options.Opts.gc_worker_window_size
+
+let gc_worker_custom_major_ratio c = c.options.Opts.gc_worker_custom_major_ratio
+
+let gc_worker_custom_minor_ratio c = c.options.Opts.gc_worker_custom_minor_ratio
+
+let gc_worker_custom_minor_max_size c = c.options.Opts.gc_worker_custom_minor_max_size

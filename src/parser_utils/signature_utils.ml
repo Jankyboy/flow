@@ -29,7 +29,7 @@ module Procedure_decider = struct
       method! function_body_any (body : (Loc.t, Loc.t) Flow_ast.Function.body) =
         begin
           match body with
-          | Flow_ast.Function.BodyBlock (loc, block) -> ignore @@ this#function_body loc block
+          | Flow_ast.Function.BodyBlock block -> ignore @@ this#function_body block
           | Flow_ast.Function.BodyExpression _ -> this#no
         end;
         body
@@ -40,4 +40,36 @@ module Procedure_decider = struct
     decider#eval decider#function_body_any body
 end
 
-let is_munged_property_name name = String.length name >= 2 && name.[0] = '_' && name.[1] <> '_'
+let is_munged_property_string name = String.length name >= 2 && name.[0] = '_' && name.[1] <> '_'
+
+let is_munged_property_name = function
+  (* TODO consider adding another name variant for munged property strings *)
+  | Reason.OrdinaryName name -> is_munged_property_string name
+  | Reason.InternalName _
+  | Reason.InternalModuleName _ ->
+    false
+
+module This_finder = struct
+  class ['a] finder =
+    object (this)
+      inherit [bool, 'a] visitor ~init:false
+
+      method! this_expression _ node =
+        this#set_acc true;
+        node
+
+      (* Any mentions of `this` in these constructs would reference
+         the `this` within those structures, so we ignore them *)
+      method! class_ _ x = x
+
+      method! function_declaration _ x = x
+
+      method! function_expression _ x = x
+    end
+
+  let found_this_in_body_or_params
+      (body : ('a, 'a) Flow_ast.Function.body) (params : ('a, 'a) Flow_ast.Function.Params.t) =
+    let finder = new finder in
+    (* If this appears in parameter defaults it still counts *)
+    finder#eval finder#function_body_any body || finder#eval finder#function_params params
+end

@@ -32,6 +32,7 @@ type t =
       member_name: string;
     }
   | EnumInvalidMemberSeparator
+  | EnumInvalidEllipsis of { trailing_comma: bool }
   | EnumNumberMemberNotInitialized of {
       enum_name: string;
       member_name: string;
@@ -69,6 +70,8 @@ type t =
   | InvalidLHSInExponentiation
   | InvalidLHSInForIn
   | InvalidLHSInForOf
+  | InvalidIndexedAccess of { has_bracket: bool }
+  | InvalidOptionalIndexedAccess
   | ExpectedPatternFoundExpression
   | MultipleDefaultsInSwitch
   | NoCatchOrFinally
@@ -110,6 +113,7 @@ type t =
   | DeclareAsync
   | DeclareClassElement
   | DeclareClassFieldInitializer
+  | DeclareOpaqueTypeInitializer
   | DeclareExportLet
   | DeclareExportConst
   | DeclareExportType
@@ -155,6 +159,13 @@ type t =
   | NullishCoalescingDisabled
   | NullishCoalescingUnexpectedLogical of string
   | WhitespaceInPrivateName
+  | ThisParamAnnotationRequired
+  | ThisParamMustBeFirst
+  | ThisParamMayNotBeOptional
+  | GetterMayNotHaveThisParam
+  | SetterMayNotHaveThisParam
+  | ThisParamBannedInArrowFunctions
+  | ThisParamBannedInConstructor
 [@@deriving ord]
 
 exception Error of (Loc.t * t) list
@@ -231,6 +242,11 @@ module PP = struct
         suggestion
         enum_name
     | EnumInvalidMemberSeparator -> "Enum members are separated with `,`. Replace `;` with `,`."
+    | EnumInvalidEllipsis { trailing_comma } ->
+      if trailing_comma then
+        "The `...` must come at the end of the enum body. Remove the trailing comma."
+      else
+        "The `...` must come after all enum members. Move it to the end of the enum body."
     | EnumNumberMemberNotInitialized { enum_name; member_name } ->
       Printf.sprintf
         "Number enum members need to be initialized, e.g. `%s = 1,` in enum `%s`."
@@ -276,6 +292,16 @@ module PP = struct
     | InvalidLHSInExponentiation -> "Invalid left-hand side in exponentiation expression"
     | InvalidLHSInForIn -> "Invalid left-hand side in for-in"
     | InvalidLHSInForOf -> "Invalid left-hand side in for-of"
+    | InvalidIndexedAccess { has_bracket } ->
+      let msg =
+        if has_bracket then
+          "Remove the period."
+        else
+          "Indexed access uses bracket notation."
+      in
+      Printf.sprintf "Invalid indexed access. %s Use the format `T[K]`." msg
+    | InvalidOptionalIndexedAccess ->
+      "Invalid optional indexed access. Indexed access uses bracket notation. Use the format `T?.[K]`."
     | ExpectedPatternFoundExpression ->
       "Expected an object pattern, array pattern, or an identifier but "
       ^ "found an expression instead"
@@ -335,7 +361,10 @@ module PP = struct
     | DeclareAsync ->
       "async is an implementation detail and isn't necessary for your declare function statement. It is sufficient for your declare function to just have a Promise return type."
     | DeclareClassElement -> "`declare` modifier can only appear on class fields."
-    | DeclareClassFieldInitializer -> "Initializers are not allowed in a `declare`."
+    | DeclareClassFieldInitializer ->
+      "Unexpected token `=`. Initializers are not allowed in a `declare`."
+    | DeclareOpaqueTypeInitializer ->
+      "Unexpected token `=`. Initializers are not allowed in a `declare opaque type`."
     | DeclareExportLet -> "`declare export let` is not supported. Use `declare export var` instead."
     | DeclareExportConst ->
       "`declare export const` is not supported. Use `declare export var` instead."
@@ -410,4 +439,13 @@ module PP = struct
         "Unexpected token `%s`. Parentheses are required to combine `??` with `&&` or `||` expressions."
         operator
     | WhitespaceInPrivateName -> "Unexpected whitespace between `#` and identifier"
+    | ThisParamAnnotationRequired -> "A type annotation is required for the `this` parameter."
+    | ThisParamMustBeFirst -> "The `this` parameter must be the first function parameter."
+    | ThisParamMayNotBeOptional -> "The `this` parameter cannot be optional."
+    | GetterMayNotHaveThisParam -> "A getter cannot have a `this` parameter."
+    | SetterMayNotHaveThisParam -> "A setter cannot have a `this` parameter."
+    | ThisParamBannedInArrowFunctions ->
+      "Arrow functions cannot have a `this` parameter; arrow functions automatically bind `this` when declared."
+    | ThisParamBannedInConstructor ->
+      "Constructors cannot have a `this` parameter; constructors don't bind `this` like other functions."
 end

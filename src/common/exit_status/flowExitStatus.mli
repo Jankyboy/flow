@@ -21,6 +21,7 @@ type t =
   | Input_error
   | Lock_stolen
   | Could_not_find_flowconfig
+  | Could_not_extract_flowlibs
   | Server_out_of_date
   | Out_of_shared_memory
   | Flowconfig_changed
@@ -35,15 +36,15 @@ type t =
   | Restart
   | Socket_error
   | Dfind_died
-  | Dfind_unresponsive
   | Watchman_error
+  | Watchman_failed
+  | File_watcher_missed_changes
   | Hash_table_full
   | Heap_full
+  | EventLogger_restart_out_of_retries
   | Unknown_error
 
 exception Exit_with of t
-
-val exit : ?msg:string -> t -> 'a
 
 val error_code : t -> int
 
@@ -51,10 +52,8 @@ val error_type : int -> t
 
 val error_type_opt : int -> t option
 
+val unpack_process_status : Unix.process_status -> string * int
+
 val to_string : t -> string
-
-val set_json_mode : pretty:bool -> unit
-
-val unset_json_mode : unit -> unit
 
 val json_props_of_t : ?msg:string -> t -> (string * Hh_json.json) list

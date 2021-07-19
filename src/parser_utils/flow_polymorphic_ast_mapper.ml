@@ -230,21 +230,21 @@ class virtual ['M, 'T, 'N, 'U] mapper =
 
     method class_ (cls : ('M, 'T) Ast.Class.t) : ('N, 'U) Ast.Class.t =
       let open Ast.Class in
-      let { id; body; tparams; extends; implements; classDecorators; comments } = cls in
+      let { id; body; tparams; extends; implements; class_decorators; comments } = cls in
       let id' = Base.Option.map ~f:this#class_identifier id in
       let comments' = Base.Option.map ~f:this#syntax comments in
       this#type_params_opt tparams (fun tparams' ->
           let extends' = Base.Option.map ~f:this#class_extends extends in
           let body' = this#class_body body in
           let implements' = Base.Option.map ~f:this#class_implements implements in
-          let classDecorators' = Base.List.map ~f:this#class_decorator classDecorators in
+          let class_decorators' = Base.List.map ~f:this#class_decorator class_decorators in
           {
             id = id';
             body = body';
             tparams = tparams';
             extends = extends';
             implements = implements';
-            classDecorators = classDecorators';
+            class_decorators = class_decorators';
             comments = comments';
           })
 
@@ -285,19 +285,23 @@ class virtual ['M, 'T, 'N, 'U] mapper =
       | PrivateField (annot, field) ->
         PrivateField (this#on_type_annot annot, this#class_private_field field)
 
+    method class_key key = this#object_key key
+
     method class_method (meth : ('M, 'T) Ast.Class.Method.t') : ('N, 'U) Ast.Class.Method.t' =
       let open Ast.Class.Method in
       let { kind; key; value; static; decorators; comments } = meth in
-      let key' = this#object_key key in
+      let key' = this#class_method_key key in
       let value' = (this#on_loc_annot * this#function_expression) value in
       let decorators' = Base.List.map ~f:this#class_decorator decorators in
       let comments' = Base.Option.map ~f:this#syntax comments in
       { kind; key = key'; value = value'; static; decorators = decorators'; comments = comments' }
 
+    method class_method_key key = this#class_key key
+
     method class_property (prop : ('M, 'T) Ast.Class.Property.t') : ('N, 'U) Ast.Class.Property.t' =
       let open Ast.Class.Property in
       let { key; value; annot; static; variance; comments } = prop in
-      let key' = this#object_key key in
+      let key' = this#class_property_key key in
       let value' = this#class_property_value value in
       let annot' = this#type_annotation_hint annot in
       let variance' = Base.Option.map ~f:this#variance variance in
@@ -310,6 +314,8 @@ class virtual ['M, 'T, 'N, 'U] mapper =
         variance = variance';
         comments = comments';
       }
+
+    method class_property_key key = this#class_key key
 
     method class_property_value (value : ('M, 'T) Ast.Class.Property.value)
         : ('N, 'U) Ast.Class.Property.value =
@@ -538,44 +544,44 @@ class virtual ['M, 'T, 'N, 'U] mapper =
     method enum_boolean_body (body : 'M Ast.Statement.EnumDeclaration.BooleanBody.t)
         : 'N Ast.Statement.EnumDeclaration.BooleanBody.t =
       let open Ast.Statement.EnumDeclaration.BooleanBody in
-      let { members; explicitType; comments } = body in
+      let { members; explicit_type; has_unknown_members; comments } = body in
       let members' = Base.List.map ~f:this#enum_boolean_member members in
-      let comments' = Base.Option.map ~f:this#syntax comments in
-      { members = members'; explicitType; comments = comments' }
+      let comments' = Base.Option.map ~f:this#syntax_with_internal comments in
+      { members = members'; explicit_type; has_unknown_members; comments = comments' }
 
     method enum_number_body (body : 'M Ast.Statement.EnumDeclaration.NumberBody.t)
         : 'N Ast.Statement.EnumDeclaration.NumberBody.t =
       let open Ast.Statement.EnumDeclaration.NumberBody in
-      let { members; explicitType; comments } = body in
+      let { members; explicit_type; has_unknown_members; comments } = body in
       let members' = Base.List.map ~f:this#enum_number_member members in
-      let comments' = Base.Option.map ~f:this#syntax comments in
-      { members = members'; explicitType; comments = comments' }
+      let comments' = Base.Option.map ~f:this#syntax_with_internal comments in
+      { members = members'; explicit_type; has_unknown_members; comments = comments' }
 
     method enum_string_body (body : 'M Ast.Statement.EnumDeclaration.StringBody.t)
         : 'N Ast.Statement.EnumDeclaration.StringBody.t =
       let open Ast.Statement.EnumDeclaration.StringBody in
-      let { members; explicitType; comments } = body in
+      let { members; explicit_type; has_unknown_members; comments } = body in
       let members' =
         match members with
         | Defaulted members -> Defaulted (Base.List.map ~f:this#enum_defaulted_member members)
         | Initialized members -> Initialized (Base.List.map ~f:this#enum_string_member members)
       in
-      let comments' = Base.Option.map ~f:this#syntax comments in
-      { members = members'; explicitType; comments = comments' }
+      let comments' = Base.Option.map ~f:this#syntax_with_internal comments in
+      { members = members'; explicit_type; has_unknown_members; comments = comments' }
 
     method enum_symbol_body (body : 'M Ast.Statement.EnumDeclaration.SymbolBody.t)
         : 'N Ast.Statement.EnumDeclaration.SymbolBody.t =
       let open Ast.Statement.EnumDeclaration.SymbolBody in
-      let { members; comments } = body in
+      let { members; has_unknown_members; comments } = body in
       let members' = Base.List.map ~f:this#enum_defaulted_member members in
-      let comments' = Base.Option.map ~f:this#syntax comments in
-      { members = members'; comments = comments' }
+      let comments' = Base.Option.map ~f:this#syntax_with_internal comments in
+      { members = members'; has_unknown_members; comments = comments' }
 
     method enum_defaulted_member (member : 'M Ast.Statement.EnumDeclaration.DefaultedMember.t)
         : 'N Ast.Statement.EnumDeclaration.DefaultedMember.t =
       let open Ast.Statement.EnumDeclaration.DefaultedMember in
       let (annot, { id }) = member in
-      (this#on_loc_annot annot, { id = this#identifier id })
+      (this#on_loc_annot annot, { id = this#enum_identifier id })
 
     method enum_boolean_member
         (member : ('M Ast.BooleanLiteral.t, 'M) Ast.Statement.EnumDeclaration.InitializedMember.t)
@@ -583,7 +589,7 @@ class virtual ['M, 'T, 'N, 'U] mapper =
       let open Ast.Statement.EnumDeclaration.InitializedMember in
       let (annot, { id; init = (init_annot, init_val) }) = member in
       let init' = (this#on_loc_annot init_annot, this#boolean_literal init_val) in
-      (this#on_loc_annot annot, { id = this#identifier id; init = init' })
+      (this#on_loc_annot annot, { id = this#enum_identifier id; init = init' })
 
     method enum_number_member
         (member : ('M Ast.NumberLiteral.t, 'M) Ast.Statement.EnumDeclaration.InitializedMember.t)
@@ -591,7 +597,7 @@ class virtual ['M, 'T, 'N, 'U] mapper =
       let open Ast.Statement.EnumDeclaration.InitializedMember in
       let (annot, { id; init = (init_annot, init_val) }) = member in
       let init' = (this#on_loc_annot init_annot, this#number_literal init_val) in
-      (this#on_loc_annot annot, { id = this#identifier id; init = init' })
+      (this#on_loc_annot annot, { id = this#enum_identifier id; init = init' })
 
     method enum_string_member
         (member : ('M Ast.StringLiteral.t, 'M) Ast.Statement.EnumDeclaration.InitializedMember.t)
@@ -599,7 +605,10 @@ class virtual ['M, 'T, 'N, 'U] mapper =
       let open Ast.Statement.EnumDeclaration.InitializedMember in
       let (annot, { id; init = (init_annot, init_val) }) = member in
       let init' = (this#on_loc_annot init_annot, this#string_literal init_val) in
-      (this#on_loc_annot annot, { id = this#identifier id; init = init' })
+      (this#on_loc_annot annot, { id = this#enum_identifier id; init = init' })
+
+    method enum_identifier (ident : ('M, 'M) Ast.Identifier.t) : ('N, 'N) Ast.Identifier.t =
+      this#identifier ident
 
     method export_default_declaration
         _loc (decl : ('M, 'T) Ast.Statement.ExportDefaultDeclaration.t)
@@ -622,13 +631,13 @@ class virtual ['M, 'T, 'N, 'U] mapper =
     method export_named_declaration _loc (decl : ('M, 'T) Ast.Statement.ExportNamedDeclaration.t)
         : ('N, 'U) Ast.Statement.ExportNamedDeclaration.t =
       let open Ast.Statement.ExportNamedDeclaration in
-      let { exportKind; source; specifiers; declaration; comments } = decl in
+      let { export_kind; source; specifiers; declaration; comments } = decl in
       let source' = Base.Option.map ~f:(this#on_loc_annot * this#string_literal) source in
       let specifiers' = Base.Option.map ~f:this#export_named_specifier specifiers in
       let declaration' = Base.Option.map ~f:this#statement declaration in
       let comments' = Base.Option.map ~f:this#syntax comments in
       {
-        exportKind;
+        export_kind;
         source = source';
         specifiers = specifiers';
         declaration = declaration';
@@ -738,10 +747,20 @@ class virtual ['M, 'T, 'N, 'U] mapper =
       let comments' = Base.Option.map ~f:this#syntax comments in
       (annot', { argument = argument'; comments = comments' })
 
+    method function_this_constraint_type (frpt : ('M, 'T) Ast.Type.Function.ThisParam.t)
+        : ('N, 'U) Ast.Type.Function.ThisParam.t =
+      let open Ast.Type.Function.ThisParam in
+      let (loc, { annot; comments }) = frpt in
+      let loc' = this#on_loc_annot loc in
+      let annot' = this#type_annotation annot in
+      let comments' = Base.Option.map ~f:this#syntax comments in
+      (loc', { annot = annot'; comments = comments' })
+
     method function_type (ft : ('M, 'T) Ast.Type.Function.t) : ('N, 'U) Ast.Type.Function.t =
       let open Ast.Type.Function in
       let {
-        params = (params_annot, { Params.params = ps; rest = rpo; comments = params_comments });
+        params =
+          (params_annot, { Params.this_; params = ps; rest = rpo; comments = params_comments });
         return;
         tparams;
         comments = func_comments;
@@ -749,6 +768,7 @@ class virtual ['M, 'T, 'N, 'U] mapper =
         ft
       in
       this#type_params_opt tparams (fun tparams' ->
+          let this_' = Base.Option.map ~f:this#function_this_constraint_type this_ in
           let ps' = Base.List.map ~f:this#function_param_type ps in
           let rpo' = Base.Option.map ~f:this#function_rest_param_type rpo in
           let return' = this#type_ return in
@@ -757,7 +777,7 @@ class virtual ['M, 'T, 'N, 'U] mapper =
           {
             params =
               ( this#on_loc_annot params_annot,
-                { Params.params = ps'; rest = rpo'; comments = params_comments' } );
+                { Params.this_ = this_'; params = ps'; rest = rpo'; comments = params_comments' } );
             return = return';
             tparams = tparams';
             comments = func_comments';
@@ -869,8 +889,10 @@ class virtual ['M, 'T, 'N, 'U] mapper =
       (annot', { arguments = arguments'; comments = comments' })
 
     method type_params_opt
-        : 'a. ('M, 'T) Ast.Type.TypeParams.t option ->
-          (('N, 'U) Ast.Type.TypeParams.t option -> 'a) -> 'a =
+        : 'a.
+          ('M, 'T) Ast.Type.TypeParams.t option ->
+          (('N, 'U) Ast.Type.TypeParams.t option -> 'a) ->
+          'a =
       fun tparams f ->
         let tparams' =
           Base.Option.map
@@ -905,6 +927,22 @@ class virtual ['M, 'T, 'N, 'U] mapper =
       let targs' = Base.Option.map ~f:this#type_args targs in
       let comments' = Base.Option.map ~f:this#syntax comments in
       { id = id'; targs = targs'; comments = comments' }
+
+    method indexed_access_type (ia : ('M, 'T) Ast.Type.IndexedAccess.t)
+        : ('N, 'U) Ast.Type.IndexedAccess.t =
+      let open Ast.Type.IndexedAccess in
+      let { _object; index; comments } = ia in
+      let _object' = this#type_ _object in
+      let index' = this#type_ index in
+      let comments' = Base.Option.map ~f:this#syntax comments in
+      { _object = _object'; index = index'; comments = comments' }
+
+    method optional_indexed_access_type (ia : ('M, 'T) Ast.Type.OptionalIndexedAccess.t)
+        : ('N, 'U) Ast.Type.OptionalIndexedAccess.t =
+      let open Ast.Type.OptionalIndexedAccess in
+      let { indexed_access; optional } = ia in
+      let indexed_access' = this#indexed_access_type indexed_access in
+      { indexed_access = indexed_access'; optional }
 
     method type_predicate ((annot, pred) : ('M, 'T) Ast.Type.Predicate.t)
         : ('N, 'U) Ast.Type.Predicate.t =
@@ -1012,6 +1050,8 @@ class virtual ['M, 'T, 'N, 'U] mapper =
           | Object ot -> Object (this#object_type ot)
           | Interface i -> Interface (this#interface_type i)
           | Generic gt -> Generic (this#generic_type gt)
+          | IndexedAccess ia -> IndexedAccess (this#indexed_access_type ia)
+          | OptionalIndexedAccess ia -> OptionalIndexedAccess (this#optional_indexed_access_type ia)
           | Union t' -> Union (this#union_type t')
           | Intersection t' -> Intersection (this#intersection_type t')
           | Tuple t' -> Tuple (this#tuple_type t')
@@ -1084,12 +1124,18 @@ class virtual ['M, 'T, 'N, 'U] mapper =
 
     method function_params (params : ('M, 'T) Ast.Function.Params.t)
         : ('N, 'U) Ast.Function.Params.t =
-      let (annot, { Ast.Function.Params.params = params_list; rest; comments }) = params in
+      let (annot, { Ast.Function.Params.params = params_list; rest; comments; this_ }) = params in
       let params_list' = Base.List.map ~f:this#function_param params_list in
       let rest' = Base.Option.map ~f:this#function_rest_param rest in
+      let this_' = Base.Option.map ~f:this#function_this_param this_ in
       let comments' = Base.Option.map ~f:this#syntax_with_internal comments in
       ( this#on_loc_annot annot,
-        { Ast.Function.Params.params = params_list'; rest = rest'; comments = comments' } )
+        {
+          Ast.Function.Params.params = params_list';
+          rest = rest';
+          comments = comments';
+          this_ = this_';
+        } )
 
     method function_param (param : ('M, 'T) Ast.Function.Param.t) : ('N, 'U) Ast.Function.Param.t =
       let open Ast.Function.Param in
@@ -1107,6 +1153,15 @@ class virtual ['M, 'T, 'N, 'U] mapper =
       let argument' = this#function_param_pattern argument in
       let comments' = Base.Option.map ~f:this#syntax comments in
       (annot', { argument = argument'; comments = comments' })
+
+    method function_this_param (this_param : ('M, 'T) Ast.Function.ThisParam.t)
+        : ('N, 'U) Ast.Function.ThisParam.t =
+      let open Ast.Function.ThisParam in
+      let (loc, { annot; comments }) = this_param in
+      let loc' = this#on_loc_annot loc in
+      let annot' = this#type_annotation annot in
+      let comments' = Base.Option.map ~f:this#syntax comments in
+      (loc', { annot = annot'; comments = comments' })
 
     method function_body body =
       let open Ast.Function in
@@ -1202,34 +1257,39 @@ class virtual ['M, 'T, 'N, 'U] mapper =
     method import_declaration _loc (decl : ('M, 'T) Ast.Statement.ImportDeclaration.t)
         : ('N, 'U) Ast.Statement.ImportDeclaration.t =
       let open Ast.Statement.ImportDeclaration in
-      let { importKind; source; specifiers; default; comments } = decl in
-      let specifiers' = Base.Option.map ~f:this#import_specifier specifiers in
+      let { import_kind; source; specifiers; default; comments } = decl in
+      let specifiers' = Base.Option.map ~f:(this#import_specifier ~import_kind) specifiers in
       let default' = Base.Option.map ~f:this#import_default_specifier default in
       let source' = (this#on_loc_annot * this#string_literal) source in
       let comments' = Base.Option.map ~f:this#syntax comments in
       {
-        importKind;
+        import_kind;
         source = source';
         specifiers = specifiers';
         default = default';
         comments = comments';
       }
 
-    method import_specifier (specifier : ('M, 'T) Ast.Statement.ImportDeclaration.specifier)
+    method import_specifier
+        ~import_kind (specifier : ('M, 'T) Ast.Statement.ImportDeclaration.specifier)
         : ('N, 'U) Ast.Statement.ImportDeclaration.specifier =
       let open Ast.Statement.ImportDeclaration in
       match specifier with
       | ImportNamedSpecifiers named_specifiers ->
-        let named_specifiers' = Base.List.map ~f:this#import_named_specifier named_specifiers in
+        let named_specifiers' =
+          Base.List.map ~f:(this#import_named_specifier ~import_kind) named_specifiers
+        in
         ImportNamedSpecifiers named_specifiers'
       | ImportNamespaceSpecifier (annot, ident) ->
         let ident' = this#import_namespace_specifier ident in
         ImportNamespaceSpecifier (this#on_loc_annot annot, ident')
 
     method import_named_specifier
+        ~(import_kind : Ast.Statement.ImportDeclaration.import_kind)
         (specifier : ('M, 'T) Ast.Statement.ImportDeclaration.named_specifier)
         : ('N, 'U) Ast.Statement.ImportDeclaration.named_specifier =
       let open Ast.Statement.ImportDeclaration in
+      ignore import_kind;
       let { kind; local; remote } = specifier in
       let local' = Base.Option.map ~f:this#t_pattern_identifier local in
       let remote' = this#t_pattern_identifier remote in
@@ -1243,43 +1303,43 @@ class virtual ['M, 'T, 'N, 'U] mapper =
 
     method jsx_element (expr : ('M, 'T) Ast.JSX.element) =
       let open Ast.JSX in
-      let { openingElement; closingElement; children; comments } = expr in
-      let openingElement' = this#jsx_opening_element openingElement in
-      let closingElement' = Base.Option.map ~f:this#jsx_closing_element closingElement in
+      let { opening_element; closing_element; children; comments } = expr in
+      let opening_element' = this#jsx_opening_element opening_element in
+      let closing_element' = Base.Option.map ~f:this#jsx_closing_element closing_element in
       let children' = this#jsx_children children in
       let comments' = Base.Option.map ~f:this#syntax comments in
       {
-        openingElement = openingElement';
-        closingElement = closingElement';
+        opening_element = opening_element';
+        closing_element = closing_element';
         children = children';
         comments = comments';
       }
 
     method jsx_fragment (expr : ('M, 'T) Ast.JSX.fragment) : ('N, 'U) Ast.JSX.fragment =
       let open Ast.JSX in
-      let { frag_openingElement; frag_closingElement; frag_children; frag_comments } = expr in
-      let opening' = this#on_loc_annot frag_openingElement in
-      let closing' = this#on_loc_annot frag_closingElement in
+      let { frag_opening_element; frag_closing_element; frag_children; frag_comments } = expr in
+      let opening' = this#on_loc_annot frag_opening_element in
+      let closing' = this#on_loc_annot frag_closing_element in
       let children' = this#jsx_children frag_children in
       let frag_comments' = Base.Option.map ~f:this#syntax frag_comments in
       {
-        frag_openingElement = opening';
-        frag_closingElement = closing';
+        frag_opening_element = opening';
+        frag_closing_element = closing';
         frag_children = children';
         frag_comments = frag_comments';
       }
 
     method jsx_opening_element (elem : ('M, 'T) Ast.JSX.Opening.t) : ('N, 'U) Ast.JSX.Opening.t =
       let open Ast.JSX.Opening in
-      let (annot, { name; selfClosing; attributes }) = elem in
-      let name' = this#jsx_name name in
+      let (annot, { name; self_closing; attributes }) = elem in
+      let name' = this#jsx_element_name name in
       let attributes' = Base.List.map ~f:this#jsx_opening_attribute attributes in
-      (this#on_loc_annot annot, { name = name'; selfClosing; attributes = attributes' })
+      (this#on_loc_annot annot, { name = name'; self_closing; attributes = attributes' })
 
     method jsx_closing_element (elem : ('M, 'T) Ast.JSX.Closing.t) : ('N, 'U) Ast.JSX.Closing.t =
       let open Ast.JSX.Closing in
       let (annot, { name }) = elem in
-      let name' = this#jsx_name name in
+      let name' = this#jsx_element_name name in
       (this#on_loc_annot annot, { name = name' })
 
     method jsx_opening_attribute (jsx_attr : ('M, 'T) Ast.JSX.Opening.attribute)
@@ -1301,13 +1361,19 @@ class virtual ['M, 'T, 'N, 'U] mapper =
     method jsx_attribute (attr : ('M, 'T) Ast.JSX.Attribute.t) : ('N, 'U) Ast.JSX.Attribute.t =
       let open Ast.JSX.Attribute in
       let (annot, { name; value }) = attr in
-      let name' =
-        match name with
-        | Identifier id -> Identifier (this#jsx_identifier id)
-        | NamespacedName nname -> NamespacedName (this#jsx_namespaced_name nname)
-      in
+      let name' = this#jsx_attribute_name name in
       let value' = Base.Option.map ~f:this#jsx_attribute_value value in
       (this#on_loc_annot annot, { name = name'; value = value' })
+
+    method jsx_attribute_name (name : ('M, 'T) Ast.JSX.Attribute.name) =
+      let open Ast.JSX.Attribute in
+      match name with
+      | Identifier id -> Identifier (this#jsx_attribute_name_identifier id)
+      | NamespacedName nname -> NamespacedName (this#jsx_attribute_name_namespaced nname)
+
+    method jsx_attribute_name_identifier id = this#jsx_identifier id
+
+    method jsx_attribute_name_namespaced nname = this#jsx_namespaced_name nname
 
     method jsx_attribute_value (value : ('M, 'T) Ast.JSX.Attribute.value)
         : ('N, 'U) Ast.JSX.Attribute.value =
@@ -1353,12 +1419,20 @@ class virtual ['M, 'T, 'N, 'U] mapper =
       let comments' = Base.Option.map ~f:this#syntax comments in
       { expression = expression'; comments = comments' }
 
-    method jsx_name (name : ('M, 'T) Ast.JSX.name) : ('N, 'U) Ast.JSX.name =
+    method jsx_element_name (name : ('M, 'T) Ast.JSX.name) : ('N, 'U) Ast.JSX.name =
       let open Ast.JSX in
       match name with
-      | Identifier id -> Identifier (this#jsx_identifier id)
-      | NamespacedName namespaced_name -> NamespacedName (this#jsx_namespaced_name namespaced_name)
-      | MemberExpression member_exp -> MemberExpression (this#jsx_member_expression member_exp)
+      | Identifier id -> Identifier (this#jsx_element_name_identifier id)
+      | NamespacedName namespaced_name ->
+        NamespacedName (this#jsx_element_name_namespaced namespaced_name)
+      | MemberExpression member_exp ->
+        MemberExpression (this#jsx_element_name_member_expression member_exp)
+
+    method jsx_element_name_identifier ident = this#jsx_identifier ident
+
+    method jsx_element_name_namespaced ns = this#jsx_namespaced_name ns
+
+    method jsx_element_name_member_expression expr = this#jsx_member_expression expr
 
     method jsx_namespaced_name (namespaced_name : ('M, 'T) Ast.JSX.NamespacedName.t)
         : ('N, 'U) Ast.JSX.NamespacedName.t =
@@ -1382,11 +1456,13 @@ class virtual ['M, 'T, 'N, 'U] mapper =
       let open Ast.JSX.MemberExpression in
       match _object with
       | Identifier id ->
-        let id' = this#jsx_identifier id in
+        let id' = this#jsx_member_expression_identifier id in
         Identifier id'
       | MemberExpression nested_exp ->
         let nested_exp' = this#jsx_member_expression nested_exp in
         MemberExpression nested_exp'
+
+    method jsx_member_expression_identifier id = this#jsx_element_name_identifier id
 
     method jsx_identifier ((annot, id) : ('M, 'T) Ast.JSX.Identifier.t)
         : ('N, 'U) Ast.JSX.Identifier.t =
@@ -1571,9 +1647,9 @@ class virtual ['M, 'T, 'N, 'U] mapper =
       this#pattern expr
 
     (* NOTE: Patterns are highly overloaded. A pattern can be a binding pattern,
-     which has a kind (Var/Let/Const, with Var being the default for all pre-ES5
-     bindings), or an assignment pattern, which has no kind. Subterms that are
-     patterns inherit the kind (or lack thereof). *)
+       which has a kind (Var/Let/Const, with Var being the default for all pre-ES5
+       bindings), or an assignment pattern, which has no kind. Subterms that are
+       patterns inherit the kind (or lack thereof). *)
     method pattern ?kind (expr : ('M, 'T) Ast.Pattern.t) : ('N, 'U) Ast.Pattern.t =
       let open Ast.Pattern in
       let (annot, patt) = expr in

@@ -64,6 +64,24 @@ type 'loc remote_ref =
     }
 [@@deriving map, show { with_path = false }]
 
+(* These accessors will compile to code that does not have a branch because
+ * id_loc and name have the same offset for each constructor. *)
+let remote_ref_loc = function
+  | Import { id_loc; _ }
+  | ImportType { id_loc; _ }
+  | ImportTypeof { id_loc; _ }
+  | ImportNs { id_loc; _ }
+  | ImportTypeofNs { id_loc; _ } ->
+    id_loc
+
+let remote_ref_name = function
+  | Import { name; _ }
+  | ImportType { name; _ }
+  | ImportTypeof { name; _ }
+  | ImportNs { name; _ }
+  | ImportTypeofNs { name; _ } ->
+    name
+
 type 'loc packed_ref =
   | LocalRef of {
       ref_loc: 'loc;
@@ -107,6 +125,10 @@ type 'loc packed =
       loc: 'loc;
       index: Module_refs.index;
     }
+  | ImportDynamic of {
+      loc: 'loc;
+      index: Module_refs.index;
+    }
   | ModuleRef of {
       loc: 'loc;
       index: Module_refs.index;
@@ -121,7 +143,10 @@ type 'loc packed_def = ('loc, 'loc packed) def [@@deriving map, show { with_path
 type 'loc export =
   | ExportRef of 'loc packed_ref
   | ExportBinding of Local_defs.index
-  | ExportDefault of { default_loc: 'loc }
+  | ExportDefault of {
+      default_loc: 'loc;
+      def: 'loc packed;
+    }
   | ExportDefaultBinding of {
       default_loc: 'loc;
       index: Local_defs.index;
@@ -129,26 +154,42 @@ type 'loc export =
   | ExportFrom of Remote_refs.index
 [@@deriving map, show { with_path = false }]
 
-type 'loc export_type =
+type 'loc type_export =
   | ExportTypeRef of 'loc packed_ref
   | ExportTypeBinding of Local_defs.index
   | ExportTypeFrom of Remote_refs.index
 [@@deriving map, show { with_path = false }]
 
-type 'loc exports =
-  | CJSExports of {
-      types: 'loc export_type smap;
-      type_stars: ('loc * Module_refs.index) list;
-      strict: bool;
-    }
-  | ESExports of {
-      names: 'loc export smap;
-      types: 'loc export_type smap;
-      stars: ('loc * Module_refs.index) list;
+type 'loc cjs_module_info =
+  | CJSModuleInfo of {
+      type_export_keys: string array;
       type_stars: ('loc * Module_refs.index) list;
       strict: bool;
     }
 [@@deriving map, show { with_path = false }]
+
+type 'loc es_module_info =
+  | ESModuleInfo of {
+      type_export_keys: string array;
+      type_stars: ('loc * Module_refs.index) list;
+      export_keys: string array;
+      stars: ('loc * Module_refs.index) list;
+      strict: bool;
+    }
+[@@deriving map, show { with_path = false }]
+
+type 'loc module_kind =
+  | CJSModule of {
+      type_exports: 'loc type_export array;
+      exports: 'loc packed option;
+      info: 'loc cjs_module_info;
+    }
+  | ESModule of {
+      type_exports: 'loc type_export array;
+      exports: 'loc export array;
+      info: 'loc es_module_info;
+    }
+[@@deriving show { with_path = false }]
 
 type 'loc pattern =
   | PDef of Pattern_defs.index
@@ -179,9 +220,15 @@ type 'loc pattern =
     }
 [@@deriving map, show { with_path = false }]
 
-type 'loc cx = { mutable errs: (Locs.index * errno) list }
+type 'loc cx = { mutable errs: (Locs.index * 'loc errno) list }
 
 let create_cx () = { errs = [] }
+
+let pack_smap f map =
+  let bindings = Array.of_list (SMap.bindings map) in
+  let ks = Array.map fst bindings in
+  let vs = Array.map (fun (_, x) -> f x) bindings in
+  (ks, vs)
 
 let pack_loc loc = Locs.index_exn loc
 
@@ -197,6 +244,7 @@ let rec pack_parsed cx = function
     TyRef (Unqualified (BuiltinRef { ref_loc = pack_loc ref_loc; name }))
   | P.Err (loc, err) ->
     let loc = pack_loc loc in
+    let err = map_errno pack_loc err in
     cx.errs <- (loc, err) :: cx.errs;
     Err loc
   | P.ValRef ref -> Ref (pack_ref ref)
@@ -206,6 +254,10 @@ let rec pack_parsed cx = function
     let loc = pack_loc loc in
     let index = Module_refs.index_exn mref in
     Require { loc; index }
+  | P.ImportDynamic { loc; mref } ->
+    let loc = pack_loc loc in
+    let index = Module_refs.index_exn mref in
+    ImportDynamic { loc; index }
   | P.ModuleRef { loc; mref } ->
     let loc = pack_loc loc in
     let index = Module_refs.index_exn mref in
@@ -298,9 +350,9 @@ and pack_local_binding cx = function
     begin
       match def with
       | None -> DisabledEnumBinding { id_loc; name }
-      | Some (lazy (rep, members)) ->
+      | Some (lazy (rep, members, has_unknown_members)) ->
         let members = SMap.map pack_loc members in
-        EnumBinding { id_loc; name; rep; members }
+        EnumBinding { id_loc; name; rep; members; has_unknown_members }
     end
 
 and pack_remote_binding = function
@@ -352,13 +404,16 @@ and pack_pattern = function
     ArrRestP { loc; i; def }
 
 and pack_exports cx file_loc (P.Exports { kind; types; type_stars; strict }) =
-  let types = SMap.map pack_export_type types in
+  let (type_export_keys, type_exports) = pack_smap pack_type_export types in
   let type_stars = List.map pack_star type_stars in
   match kind with
-  | P.UnknownModule -> (CJSExports { types; type_stars; strict }, None)
+  | P.UnknownModule ->
+    let info = CJSModuleInfo { type_export_keys; type_stars; strict } in
+    CJSModule { type_exports; exports = None; info }
   | P.CJSModule t ->
-    let export_def = Some (pack_parsed cx t) in
-    (CJSExports { types; type_stars; strict }, export_def)
+    let exports = Some (pack_parsed cx t) in
+    let info = CJSModuleInfo { type_export_keys; type_stars; strict } in
+    CJSModule { type_exports; exports; info }
   | P.CJSModuleProps props ->
     let file_loc = pack_loc file_loc in
     let props =
@@ -369,15 +424,29 @@ and pack_exports cx file_loc (P.Exports { kind; types; type_stars; strict }) =
           ObjValueField (id_loc, t, Polarity.Neutral))
         props
     in
-    let export_def = Some (Value (ObjLit { loc = file_loc; frozen = true; proto = None; props })) in
-    (CJSExports { types; type_stars; strict }, export_def)
+    let exports = Some (Value (ObjLit { loc = file_loc; frozen = true; proto = None; props })) in
+    let info = CJSModuleInfo { type_export_keys; type_stars; strict } in
+    CJSModule { type_exports; exports; info }
+  | P.CJSDeclareModule props ->
+    let file_loc = pack_loc file_loc in
+    let props =
+      SMap.map
+        (fun binding ->
+          let index = Local_defs.index_exn binding in
+          let t = Ref (LocalRef { ref_loc = file_loc; index }) in
+          ObjValueField (file_loc, t, Polarity.Neutral))
+        props
+    in
+    let exports = Some (Value (ObjLit { loc = file_loc; frozen = true; proto = None; props })) in
+    let info = CJSModuleInfo { type_export_keys; type_stars; strict } in
+    CJSModule { type_exports; exports; info }
   | P.ESModule { names; stars } ->
-    let export_def = ref None in
-    let names = SMap.map (pack_export cx export_def) names in
+    let (export_keys, exports) = pack_smap (pack_export cx) names in
     let stars = List.map pack_star stars in
-    (ESExports { names; types; stars; type_stars; strict }, !export_def)
+    let info = ESModuleInfo { type_export_keys; type_stars; export_keys; stars; strict } in
+    ESModule { type_exports; exports; info }
 
-and pack_export cx export_def = function
+and pack_export cx = function
   | P.ExportRef ref ->
     let ref = pack_ref ref in
     ExportRef ref
@@ -387,8 +456,7 @@ and pack_export cx export_def = function
   | P.ExportDefault { default_loc; def } ->
     let default_loc = pack_loc default_loc in
     let def = pack_parsed cx def in
-    export_def := Some def;
-    ExportDefault { default_loc }
+    ExportDefault { default_loc; def }
   | P.ExportDefaultBinding { default_loc; name = _; binding } ->
     let default_loc = pack_loc default_loc in
     let index = Local_defs.index_exn binding in
@@ -397,7 +465,7 @@ and pack_export cx export_def = function
     let index = Remote_refs.index_exn ref in
     ExportFrom index
 
-and pack_export_type = function
+and pack_type_export = function
   | P.ExportTypeRef ref ->
     let ref = pack_ref ref in
     ExportTypeRef ref
@@ -429,3 +497,8 @@ and pack_op cx op = map_op (pack_parsed cx) op
 and pack_builtin = function
   | P.LocalBinding b -> Local_defs.index_exn b
   | P.RemoteBinding _ -> failwith "unexpected remote builtin"
+
+and pack_builtin_module cx (loc, exports) =
+  let module_kind = pack_exports cx loc exports in
+  let loc = pack_loc loc in
+  (loc, module_kind)

@@ -20,6 +20,7 @@ let spec =
         empty
         |> base_flags
         |> options_and_json_flags
+        |> saved_state_flags
         |> log_file_flags
         |> flag "--wait" no_arg ~doc:"Wait for the server to finish initializing"
         |> lazy_flags
@@ -42,6 +43,7 @@ let main
     options_flags
     json
     pretty
+    saved_state_options_flags
     server_log_file
     monitor_log_file
     wait
@@ -59,11 +61,20 @@ let main
     () =
   let flowconfig_name = base_flags.Base_flags.flowconfig_name in
   let root = CommandUtils.guess_root flowconfig_name path_opt in
-  let flowconfig =
+  let (flowconfig, flowconfig_hash) =
     let flowconfig_path = Server_files_js.config_file flowconfig_name root in
-    read_config_or_exit ~enforce_warnings:(not ignore_version) flowconfig_path
+    read_config_and_hash_or_exit ~enforce_warnings:(not ignore_version) flowconfig_path
   in
-  let options = make_options ~flowconfig_name ~flowconfig ~lazy_mode ~root options_flags in
+  let options =
+    make_options
+      ~flowconfig_name
+      ~flowconfig_hash
+      ~flowconfig
+      ~lazy_mode
+      ~root
+      ~options_flags
+      ~saved_state_options_flags
+  in
   let init_id = Random_id.short_string () in
   (* initialize loggers before doing too much, especially anything that might exit *)
   LoggingUtils.init_loggers ~options ();

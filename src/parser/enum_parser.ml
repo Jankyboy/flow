@@ -26,6 +26,8 @@ end = struct
   type acc = {
     members: members;
     seen_names: SSet.t;
+    has_unknown_members: bool;
+    internal_comments: Loc.t Comment.t list;
   }
 
   type init =
@@ -38,7 +40,13 @@ end = struct
   let empty_members =
     { boolean_members = []; number_members = []; string_members = []; defaulted_members = [] }
 
-  let empty_acc = { members = empty_members; seen_names = SSet.empty }
+  let empty_acc =
+    {
+      members = empty_members;
+      seen_names = SSet.empty;
+      has_unknown_members = false;
+      internal_comments = [];
+    }
 
   let end_of_member_init env =
     match Peek.token env with
@@ -123,7 +131,7 @@ end = struct
   let is_a_to_z c = c >= 'a' && c <= 'z'
 
   let enum_member ~enum_name ~explicit_type acc env =
-    let { members; seen_names } = acc in
+    let { members; seen_names; _ } = acc in
     let (member_loc, (id, init)) = member_raw env in
     let (id_loc, { Identifier.name = member_name; _ }) = id in
     (* if we parsed an empty name, something has gone wrong and we should abort analysis *)
@@ -184,12 +192,39 @@ end = struct
     match Peek.token env with
     | T_RCURLY
     | T_EOF ->
-      {
-        boolean_members = List.rev acc.members.boolean_members;
-        number_members = List.rev acc.members.number_members;
-        string_members = List.rev acc.members.string_members;
-        defaulted_members = List.rev acc.members.defaulted_members;
-      }
+      ( {
+          boolean_members = List.rev acc.members.boolean_members;
+          number_members = List.rev acc.members.number_members;
+          string_members = List.rev acc.members.string_members;
+          defaulted_members = List.rev acc.members.defaulted_members;
+        },
+        acc.has_unknown_members,
+        acc.internal_comments )
+    | T_ELLIPSIS ->
+      let loc = Peek.loc env in
+      (* Internal comments may appear before the ellipsis *)
+      let internal_comments = Peek.comments env in
+      Eat.token env;
+      (match Peek.token env with
+      | T_RCURLY
+      | T_EOF ->
+        ()
+      | T_COMMA ->
+        Expect.token env T_COMMA;
+        let trailing_comma =
+          match Peek.token env with
+          | T_RCURLY
+          | T_EOF ->
+            true
+          | _ -> false
+        in
+        error_at env (loc, Parse_error.EnumInvalidEllipsis { trailing_comma })
+      | _ -> error_at env (loc, Parse_error.EnumInvalidEllipsis { trailing_comma = false }));
+      enum_members
+        ~enum_name
+        ~explicit_type
+        { acc with has_unknown_members = true; internal_comments }
+        env
     | _ ->
       let acc = enum_member ~enum_name ~explicit_type acc env in
       (match Peek.token env with
@@ -202,14 +237,16 @@ end = struct
       | _ -> Expect.token env T_COMMA);
       enum_members ~enum_name ~explicit_type acc env
 
-  let string_body ~env ~enum_name ~is_explicit string_members defaulted_members comments =
+  let string_body
+      ~env ~enum_name ~is_explicit ~has_unknown_members string_members defaulted_members comments =
     let initialized_len = List.length string_members in
     let defaulted_len = List.length defaulted_members in
     let defaulted_body () =
       StringBody
         {
           StringBody.members = StringBody.Defaulted defaulted_members;
-          explicitType = is_explicit;
+          explicit_type = is_explicit;
+          has_unknown_members;
           comments;
         }
     in
@@ -217,7 +254,8 @@ end = struct
       StringBody
         {
           StringBody.members = StringBody.Initialized string_members;
-          explicitType = is_explicit;
+          explicit_type = is_explicit;
+          has_unknown_members;
           comments;
         }
     in
@@ -240,7 +278,7 @@ end = struct
       initialized_body ()
 
   let parse_explicit_type ~enum_name env =
-    if Expect.maybe env T_OF then (
+    if Eat.maybe env T_OF then (
       Eat.push_lex_mode env Lex_mode.TYPE;
       let result =
         match Peek.token env with
@@ -272,7 +310,10 @@ end = struct
             []
         in
         Expect.token env T_LCURLY;
-        let members = enum_members ~enum_name ~explicit_type empty_acc env in
+        let (members, has_unknown_members, internal) =
+          enum_members ~enum_name ~explicit_type empty_acc env
+        in
+        let internal = internal @ Peek.comments env in
         Expect.token env T_RCURLY;
         let trailing =
           match Peek.token env with
@@ -282,25 +323,37 @@ end = struct
           | _ when Peek.is_line_terminator env -> Eat.comments_until_next_line env
           | _ -> []
         in
-        let comments = Flow_ast_utils.mk_comments_opt ~leading ~trailing () in
+        let comments = Flow_ast_utils.mk_comments_with_internal_opt ~leading ~trailing ~internal in
         let body =
           match explicit_type with
           | Some Enum_common.Boolean ->
             BooleanBody
-              { BooleanBody.members = members.boolean_members; explicitType = true; comments }
+              {
+                BooleanBody.members = members.boolean_members;
+                explicit_type = true;
+                has_unknown_members;
+                comments;
+              }
           | Some Enum_common.Number ->
             NumberBody
-              { NumberBody.members = members.number_members; explicitType = true; comments }
+              {
+                NumberBody.members = members.number_members;
+                explicit_type = true;
+                has_unknown_members;
+                comments;
+              }
           | Some Enum_common.String ->
             string_body
               ~env
               ~enum_name
               ~is_explicit:true
+              ~has_unknown_members
               members.string_members
               members.defaulted_members
               comments
           | Some Enum_common.Symbol ->
-            SymbolBody { SymbolBody.members = members.defaulted_members; comments }
+            SymbolBody
+              { SymbolBody.members = members.defaulted_members; has_unknown_members; comments }
           | None ->
             let bools_len = List.length members.boolean_members in
             let nums_len = List.length members.number_members in
@@ -308,7 +361,12 @@ end = struct
             let defaulted_len = List.length members.defaulted_members in
             let empty () =
               StringBody
-                { StringBody.members = StringBody.Defaulted []; explicitType = false; comments }
+                {
+                  StringBody.members = StringBody.Defaulted [];
+                  explicit_type = false;
+                  has_unknown_members;
+                  comments;
+                }
             in
             begin
               match (bools_len, nums_len, strs_len, defaulted_len) with
@@ -318,6 +376,7 @@ end = struct
                   ~env
                   ~enum_name
                   ~is_explicit:false
+                  ~has_unknown_members
                   members.string_members
                   members.defaulted_members
                   comments
@@ -329,7 +388,12 @@ end = struct
                       (loc, Parse_error.EnumBooleanMemberNotInitialized { enum_name; member_name }))
                   members.defaulted_members;
                 BooleanBody
-                  { BooleanBody.members = members.boolean_members; explicitType = false; comments }
+                  {
+                    BooleanBody.members = members.boolean_members;
+                    explicit_type = false;
+                    has_unknown_members;
+                    comments;
+                  }
               | (0, _, 0, _) when nums_len >= defaulted_len ->
                 List.iter
                   (fun (loc, { DefaultedMember.id = (_, { Identifier.name = member_name; _ }) }) ->
@@ -338,7 +402,12 @@ end = struct
                       (loc, Parse_error.EnumNumberMemberNotInitialized { enum_name; member_name }))
                   members.defaulted_members;
                 NumberBody
-                  { NumberBody.members = members.number_members; explicitType = false; comments }
+                  {
+                    NumberBody.members = members.number_members;
+                    explicit_type = false;
+                    has_unknown_members;
+                    comments;
+                  }
               | _ ->
                 error_at env (name_loc, Parse_error.EnumInconsistentMemberValues { enum_name });
                 empty ()

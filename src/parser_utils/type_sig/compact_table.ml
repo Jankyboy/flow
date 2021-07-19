@@ -60,6 +60,8 @@ module Make () = struct
     end;
     x
 
+  let value node = node.data
+
   let modify node f = node.data <- f node.data
 
   let mark node f =
@@ -114,6 +116,8 @@ module Make () = struct
           loop0 head head head.next
 
   let index_exn node =
+    (* If this is failing, the marking pass is probably missing something.
+       See the comment at the top of `type_sig_pack *)
     assert (node.index >= 0);
     node.index
 
@@ -152,14 +156,30 @@ module Make () = struct
 
   let to_array x = x
 
-  module Heap = Type_sig_heap
+  let to_array_map = map
 
-  let heap_size f xs =
-    let size = ref (Heap.addr_map_size xs) in
-    iter (fun x -> size := !size + f x) xs;
-    !size
+  module IndexSet = Set.Make (struct
+    type t = index
 
-  let to_heap = Heap.write_addr_map
+    let compare a b = a - b
+  end)
 
-  let from_heap = Heap.read_addr_map
+  module Interned = struct
+    type nonrec 'a builder = {
+      table: ('a, 'a node) Hashtbl.t;
+      builder: 'a builder;
+    }
+
+    let create () = { table = Hashtbl.create 0; builder = create () }
+
+    let push { table; builder } data =
+      match Hashtbl.find_opt table data with
+      | Some node -> node
+      | None ->
+        let node = push builder data in
+        Hashtbl.add table data node;
+        node
+
+    let compact { builder; _ } = compact builder
+  end
 end

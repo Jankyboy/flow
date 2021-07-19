@@ -37,7 +37,7 @@ export default (suite(
           diagnostics: [],
         },
       }).verifyAllLSPMessagesInStep(
-        [['textDocument/codeAction', '{[]}']],
+        [{method: 'textDocument/codeAction', result: []}],
         ['textDocument/publishDiagnostics', ...lspIgnoreStatusAndCancellation],
       ),
     ]),
@@ -74,15 +74,15 @@ export default (suite(
               severity: 1,
               code: 'InferError',
               source: 'Flow',
-              message: 'Missing type annotation for `a`.',
+              message: 'Cannot build a typed interface for this module.',
             },
           ],
         },
       }).verifyAllLSPMessagesInStep(
         [
-          [
-            'textDocument/codeAction',
-            `{${JSON.stringify([
+          {
+            method: 'textDocument/codeAction',
+            result: [
               {
                 title: 'insert type annotation',
                 kind: 'quickfix',
@@ -95,7 +95,7 @@ export default (suite(
                     severity: 1,
                     code: 'InferError',
                     source: 'Flow',
-                    message: 'Missing type annotation for `a`.',
+                    message: 'Cannot build a typed interface for this module.',
                     relatedInformation: [],
                     relatedLocations: [],
                   },
@@ -108,14 +108,14 @@ export default (suite(
                           start: {line: 1, character: 22},
                           end: {line: 1, character: 22},
                         },
-                        newText: ': any',
+                        newText: ': empty',
                       },
                     ],
                   },
                 },
               },
-            ])}}`,
-          ],
+            ],
+          },
         ],
         ['textDocument/publishDiagnostics', ...lspIgnoreStatusAndCancellation],
       ),
@@ -142,9 +142,9 @@ export default (suite(
         },
       }).verifyAllLSPMessagesInStep(
         [
-          [
-            'textDocument/codeAction',
-            `{${JSON.stringify([
+          {
+            method: 'textDocument/codeAction',
+            result: [
               {
                 title: 'insert type annotation',
                 kind: 'quickfix',
@@ -164,14 +164,14 @@ export default (suite(
                           },
                         },
                         newText:
-                          ': {a: number, b: (a: any, b: string) => number,...}',
+                          ': { a: number, b: (a: empty, b: string) => number, ... }',
                       },
                     ],
                   },
                 },
               },
-            ])}}`,
-          ],
+            ],
+          },
         ],
         ['textDocument/publishDiagnostics', ...lspIgnoreStatusAndCancellation],
       ),
@@ -199,9 +199,9 @@ export default (suite(
         },
       }).verifyAllLSPMessagesInStep(
         [
-          [
-            'textDocument/codeAction',
-            `{${JSON.stringify([
+          {
+            method: 'textDocument/codeAction',
+            result: [
               {
                 title: 'insert type annotation',
                 kind: 'quickfix',
@@ -220,7 +220,7 @@ export default (suite(
                             character: 0,
                           },
                         },
-                        newText: 'import type {Node} from "./exports-func.js";',
+                        newText: 'import type { Node } from "./exports-func";',
                       },
                       {
                         range: {
@@ -239,8 +239,8 @@ export default (suite(
                   },
                 },
               },
-            ])}}`,
-          ],
+            ],
+          },
         ],
         ['textDocument/publishDiagnostics', ...lspIgnoreStatusAndCancellation],
       ),

@@ -16,7 +16,16 @@ let prerr_endlinef fmt = Printf.ksprintf prerr_endline fmt
 let exe_name = Filename.basename Sys.executable_name
 
 module FilenameSet = Set.Make (File_key)
-module FilenameMap = WrappedMap.Make (File_key)
+
+module FilenameMap = struct
+  include WrappedMap.Make (File_key)
+
+  let pp : (Format.formatter -> 'a -> unit) -> Format.formatter -> 'a t -> unit =
+   (fun pp_data -> make_pp File_key.pp pp_data)
+
+  let show pp_data x = Format.asprintf "%a" (pp pp_data) x
+end
+
 module FilenameGraph = Graph.Make (FilenameSet) (FilenameMap)
 
 let debug_string_of_filename_set set =
@@ -47,7 +56,9 @@ let assert_false s =
        ">>>>");
   failwith s
 
-let __DEBUG__ ?(s = "") f = (try f () with _ -> assert_false s)
+let __DEBUG__ ?(s = "") f =
+  try f () with
+  | _ -> assert_false s
 
 let call_succeeds try_function function_input =
   try
@@ -197,12 +208,13 @@ let typo_suggestions =
 
 let typo_suggestion possible_names name =
   let suggestions = typo_suggestions possible_names name in
-  (try Some (List.hd suggestions) with _ -> None)
+  try Some (List.hd suggestions) with
+  | _ -> None
 
 (* util to limit the number of calls to a (usually recursive) function *)
 let count_calls ~counter ~default f =
   (* Count number of calls to a function f, decrementing at each call and
-      returning default when count reaches 0. **)
+     returning default when count reaches 0. **)
   if !counter = 0 then
     default
   else (
@@ -214,7 +226,8 @@ let extension_of_filename filename =
   try
     let idx = String.rindex filename '.' in
     Some (String.sub filename idx (String.length filename - idx))
-  with Not_found -> None
+  with
+  | Not_found -> None
 
 (* ordinal of a number *)
 let ordinal = function

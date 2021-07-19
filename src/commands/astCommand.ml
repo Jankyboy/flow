@@ -63,7 +63,7 @@ module Translate =
     (Json_of_estree)
     (struct
       (* TODO: make these configurable via CLI flags *)
-      let include_interned_comments = false
+      let include_interned_comments = true
 
       let include_comments = true
 
@@ -114,7 +114,7 @@ let main
     let results =
       try
         (* Make the parser as permissive as possible.
-         TODO: make these CLI flags *)
+           TODO: make these CLI flags *)
         let parse_options =
           Some
             Parser_env.
@@ -184,7 +184,8 @@ let main
             let tokens_prop = ("tokens", JSON_Array (List.rev !tokens)) in
             JSON_Object (errors_prop :: tokens_prop :: params)
           | _ -> assert false
-      with Parse_error.Error l -> JSON_Object [("errors", Translate.errors l)]
+      with
+      | Parse_error.Error l -> JSON_Object [("errors", Translate.errors l)]
     in
     print_json_endline ~pretty results)
 

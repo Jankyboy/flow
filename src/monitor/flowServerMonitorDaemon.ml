@@ -38,7 +38,7 @@ let register_entry_point (start : start_function) : entry_point =
       LoggingUtils.set_hh_logger_min_level monitor_options.FlowServerMonitorOptions.server_options;
       FlowEventLogger.restore_context logging_context;
       FlowEventLogger.set_command (Some "monitor");
-      FlowEventLogger.init_flow_command ~init_id ~version:Flow_version.version;
+      FlowEventLogger.init_flow_command ~init_id;
 
       let out_fd = Daemon.descr_of_out_channel oc in
       start ~waiting_fd:out_fd monitor_options)
@@ -50,8 +50,8 @@ let register_entry_point (start : start_function) : entry_point =
  * initialization to complete *)
 let rec wait_loop ~should_wait child_pid ic =
   let msg : wait_msg =
-    try Marshal_tools.from_fd_with_preamble (Daemon.descr_of_in_channel ic)
-    with End_of_file ->
+    try Marshal_tools.from_fd_with_preamble (Daemon.descr_of_in_channel ic) with
+    | End_of_file ->
       (* The pipe broke before we got the all-clear from the monitor. What kind
        * of things could go wrong? Well we check the lock before forking the
        * monitor, but maybe by the time the monitor started someone else had
@@ -67,7 +67,7 @@ let rec wait_loop ~should_wait child_pid ic =
           Unix.(waitpid [WNOHANG; WUNTRACED] child_pid)
         | (pid, status) -> (pid, status)
       in
-      let exit_code = FlowExitStatus.Server_start_failed status in
+      let exit_code = Exit.Server_start_failed status in
       let (msg, exit_code) =
         if pid = 0 (* The monitor is still alive...not sure what happened *) then
           ("Error: Failed to start server for some unknown reason.", exit_code)
@@ -76,14 +76,13 @@ let rec wait_loop ~should_wait child_pid ic =
           let (reason, exit_code) =
             match status with
             | Unix.WEXITED code ->
-              if code = FlowExitStatus.(error_code Lock_stolen) then
+              if code = Exit.(error_code Lock_stolen) then
                 (* Sometimes when we actually go to start the monitor we find a
                  * monitor already running (race condition). If so, we can just
                  * forward that error code *)
-                ("There is already a server running.", FlowExitStatus.Lock_stolen)
-              else if code = FlowExitStatus.(error_code Out_of_shared_memory) then
-                ( "The server is failed to allocate shared memory.",
-                  FlowExitStatus.Out_of_shared_memory )
+                ("There is already a server running.", Exit.Lock_stolen)
+              else if code = Exit.(error_code Out_of_shared_memory) then
+                ("The server is failed to allocate shared memory.", Exit.Out_of_shared_memory)
               else
                 (spf "exited prematurely with code %d." code, exit_code)
             | Unix.WSIGNALED signal ->
@@ -94,7 +93,7 @@ let rec wait_loop ~should_wait child_pid ic =
           in
           (spf "Error: Failed to start server. %s" reason, exit_code)
       in
-      FlowExitStatus.(exit ~msg exit_code)
+      Exit.(exit ~msg exit_code)
   in
   if should_wait && msg <> Ready then
     wait_loop ~should_wait child_pid ic
@@ -118,12 +117,13 @@ let daemonize ~wait ~on_spawn ~init_id ~monitor_options (entry_point : entry_poi
    * So for now let's make Windows 7 not crash. It seems like `flow start` on
    * Windows 7 doesn't actually leak stdio, so a no op is acceptable
    *)
-  ( if Sys.win32 then
+  (if Sys.win32 then
     Unix.(
       try
         set_close_on_exec stdout;
         set_close_on_exec stderr
-      with Unix_error (EINVAL, _, _) -> ()) );
+      with
+      | Unix_error (EINVAL, _, _) -> ()));
 
   let root_str =
     monitor_options.FlowServerMonitorOptions.server_options |> Options.root |> Path.to_string

@@ -22,16 +22,14 @@ let metadata =
     (* global *)
     automatic_require_default = false;
     babel_loose_array_spread = false;
+    check_updates_against_providers = false;
     max_literal_length = 100;
     enable_const_params = false;
     enable_enums = true;
+    enable_enums_with_unknown_members = true;
+    enable_indexed_access = true;
     enforce_strict_call_arity = true;
-    esproposal_class_static_fields = Options.ESPROPOSAL_ENABLE;
-    esproposal_class_instance_fields = Options.ESPROPOSAL_ENABLE;
-    esproposal_decorators = Options.ESPROPOSAL_WARN;
-    esproposal_export_star_as = Options.ESPROPOSAL_ENABLE;
-    esproposal_optional_chaining = Options.ESPROPOSAL_ENABLE;
-    esproposal_nullish_coalescing = Options.ESPROPOSAL_ENABLE;
+    enforce_local_inference_annotations = false;
     exact_by_default = false;
     facebook_fbs = None;
     facebook_fbt = None;
@@ -41,13 +39,15 @@ let metadata =
     max_trace_depth = 0;
     max_workers = 0;
     react_runtime = Options.ReactRuntimeClassic;
+    react_server_component_exts = SSet.empty;
     recursion_limit = 10000;
+    reorder_checking = Options.Lexical;
     root = Path.dummy_path;
+    run_post_inference_implicit_instantiation = false;
     strict_es6_import_export = false;
     strict_es6_import_export_excludes = [];
     strip_root = true;
     suppress_types = SSet.empty;
-    default_lib_dir = None;
     trust_mode = Options.NoTrust;
     type_asserts = false;
   }
@@ -118,22 +118,42 @@ let before_and_after_stmts file_name =
   match parse_content file_key content with
   | Error e -> Error e
   | Ok ((_, { Flow_ast.Program.statements = stmts; _ }), file_sig) ->
-    let cx =
-      let aloc_tables = Utils_js.FilenameMap.empty in
-      let rev_table = lazy (ALoc.make_empty_reverse_table ()) in
-      let sig_cx = Context.make_sig () in
-      let ccx = Context.make_ccx sig_cx aloc_tables in
-      Context.make ccx metadata file_key rev_table Files.lib_module_ref Context.Checking
+    (* Loading the entire libdefs here would be overkill, but the typed_ast tests do use Object
+     * in a few tests. In order to avoid EBuiltinLookupFailed errors with an empty source location,
+     * we manually add "Object" -> Any into the builtins map. We use the UnresolvedName any type
+     * to avoid any "Any value used as type" errors that may otherwise appear *)
+    let master_cx = Context.empty_master_cx () in
+    let () =
+      let reason =
+        let loc = ALoc.none in
+        let desc = Reason.RCustom "Explicit any used in type_ast tests" in
+        Reason.mk_reason desc loc
+      in
+      Builtins.set_builtin
+        ~flow_t:(fun _ -> ())
+        master_cx.Context.builtins
+        (Reason.OrdinaryName "Object")
+        (Type.AnyT (reason, Type.AnyError (Some Type.UnresolvedName)))
     in
-    Flow_js.mk_builtins cx;
+    let cx =
+      let aloc_table = lazy (ALoc.empty_table file_key) in
+      let ccx = Context.(make_ccx master_cx) in
+      Context.make
+        ccx
+        metadata
+        file_key
+        aloc_table
+        (Reason.OrdinaryName Files.lib_module_ref)
+        Context.Checking
+    in
     add_require_tvars cx file_sig;
     let module_scope = Scope.fresh () in
-    Env.init_env cx module_scope;
+    Env.init_env module_scope;
     let stmts = Base.List.map ~f:Ast_loc_utils.loc_to_aloc_mapper#statement stmts in
     let t_stmts =
       try
         Statement.toplevel_decls cx stmts;
-        Statement.toplevels cx stmts
+        Toplevels.toplevels Statement.statement cx stmts
       with
       | Abnormal.Exn (Abnormal.Stmts t_stmts, _) -> t_stmts
       | Abnormal.Exn (Abnormal.Stmt t_stmt, _) -> [t_stmt]
@@ -207,7 +227,8 @@ let system_diff ~f prefix =
         | code ->
           Utils_js.print_endlinef "diff read error code %d" code;
           Error "diff wasn't able to run for some reason"
-      with e ->
+      with
+      | e ->
         let e = Exception.wrap e in
         let msg = Exception.get_ctor_string e in
         Error msg

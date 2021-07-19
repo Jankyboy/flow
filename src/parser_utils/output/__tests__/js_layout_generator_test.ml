@@ -20,6 +20,8 @@ let opts = Js_layout_generator.default_opts
 
 let preserve_formatting_opts = Js_layout_generator.{ default_opts with preserve_formatting = true }
 
+let no_bracket_spacing opts = Js_layout_generator.{ opts with bracket_spacing = false }
+
 let tests =
   "js_layout_generator"
   >::: [
@@ -31,6 +33,7 @@ let tests =
          "pattern" >::: Pattern_test.tests;
          "program" >::: Program_test.tests;
          "jsx" >::: Jsx_test.tests;
+         "trailing_commas" >::: Trailing_commas_test.tests;
          ( "unary_plus_binary" >:: fun ctxt ->
            let x = E.identifier "x" in
            let y = E.identifier "y" in
@@ -58,12 +61,12 @@ let tests =
            assert_expression ~ctxt "x+(+y+y)" ast;
 
            (* `*` is higher precedence than `+`, so would not normally need parens if
-         not for the `+y` *)
+              not for the `+y` *)
            let ast = E.plus x (E.mult plus_y y) in
            assert_expression ~ctxt "x+(+y)*y" ast;
 
            (* parens are necessary around the inner `+y+y`, but would be reundant
-         around the multiplication. that is, we don't need `x+((+y+y)*y)`. *)
+              around the multiplication. that is, we don't need `x+((+y+y)*y)`. *)
            let ast = E.plus x (E.mult (E.plus plus_y y) y) in
            assert_expression ~ctxt "x+(+y+y)*y" ast );
          ( "update_plus_binary" >:: fun ctxt ->
@@ -956,14 +959,14 @@ let tests =
            assert_output
              ~ctxt
              ~pretty:true
-             ( "for (\n"
+             ("for (\n"
              ^ "  "
              ^ x80
              ^ ";\n"
              ^ "  ;\n"
              ^ "  \n"
              (* TODO: remove trailing whitespace *)
-             ^ ");" )
+             ^ ");")
              layout );
          ( "binary_in_in_for_loops" >:: fun ctxt ->
            let ast =
@@ -1135,41 +1138,6 @@ let tests =
              ~ctxt
              ~pretty:true
              ("[\n  a,\n  " ^ String.make 80 'b' ^ ",\n  ,\n]") );
-         ( "array_with_trailing_comma" >:: fun ctxt ->
-           let a80 = String.make 80 'a' in
-           let layout =
-             Js_layout_generator.expression
-               ~opts
-               (E.array
-                  [E.array_expression (E.identifier a80); E.array_expression (E.identifier a80)])
-           in
-           assert_layout
-             ~ctxt
-             L.(
-               loc
-                 (group
-                    [
-                      atom "[";
-                      indent
-                        (fused
-                           [
-                             softline;
-                             loc (id a80);
-                             atom ",";
-                             pretty_line;
-                             loc (id a80);
-                             Layout.IfBreak (atom ",", empty);
-                           ]);
-                      softline;
-                      atom "]";
-                    ]))
-             layout;
-           assert_output ~ctxt ("[" ^ a80 ^ "," ^ a80 ^ "]") layout;
-           assert_output
-             ~ctxt
-             ~pretty:true
-             ("[\n" ^ "  " ^ a80 ^ ",\n" ^ "  " ^ a80 ^ ",\n" ^ "]")
-             layout );
          ( "array_with_trailing_hole" >:: fun ctxt ->
            let layout =
              Js_layout_generator.expression
@@ -1712,8 +1680,18 @@ let tests =
            assert_statement_string ~ctxt {|import{a,b}from"a";|};
            assert_statement_string ~ctxt {|import type{}from"a";|};
            assert_statement_string ~ctxt {|import typeof{}from"a";|};
-           assert_statement_string ~ctxt ~pretty:true {|import {a, b} from "a";|};
-           assert_statement_string ~ctxt ~pretty:true {|import type {a, b} from "a";|};
+           assert_statement_string ~ctxt ~pretty:true {|import { a, b } from "a";|};
+           assert_statement_string
+             ~ctxt
+             ~pretty:true
+             ~opts:(no_bracket_spacing opts)
+             {|import {a, b} from "a";|};
+           assert_statement_string ~ctxt ~pretty:true {|import type { a, b } from "a";|};
+           assert_statement_string
+             ~ctxt
+             ~pretty:true
+             ~opts:(no_bracket_spacing opts)
+             {|import type {a, b} from "a";|};
            assert_statement_string
              ~ctxt
              ~pretty:true
@@ -1723,7 +1701,12 @@ let tests =
              ~ctxt
              ~pretty:true
              ("import a, * as " ^ String.make 80 'b' ^ " from \"a\";");
-           assert_statement_string ~ctxt ~pretty:true {|import a, {b} from "a";|};
+           assert_statement_string ~ctxt ~pretty:true {|import a, { b } from "a";|};
+           assert_statement_string
+             ~ctxt
+             ~pretty:true
+             ~opts:(no_bracket_spacing opts)
+             {|import a, {b} from "a";|};
            assert_statement_string
              ~ctxt
              ~pretty:true
@@ -1742,10 +1725,20 @@ let tests =
            assert_statement_string ~ctxt "export const a=b;";
            assert_statement_string ~ctxt "export interface a{a():b}";
            assert_statement_string ~ctxt ~pretty:true "export {};";
-           assert_statement_string ~ctxt ~pretty:true "export {a} from \"a\";";
+           assert_statement_string ~ctxt ~pretty:true "export { a } from \"a\";";
+           assert_statement_string
+             ~ctxt
+             ~pretty:true
+             ~opts:(no_bracket_spacing opts)
+             "export {a} from \"a\";";
            assert_statement_string ~ctxt ~pretty:true "export * from \"a\";";
            assert_statement_string ~ctxt ~pretty:true "export * as a from \"a\";";
-           assert_statement_string ~ctxt ~pretty:true "export type {a};";
+           assert_statement_string ~ctxt ~pretty:true "export type { a };";
+           assert_statement_string
+             ~ctxt
+             ~pretty:true
+             ~opts:(no_bracket_spacing opts)
+             "export type {a};";
            assert_statement_string
              ~ctxt
              ~pretty:true
@@ -1756,8 +1749,8 @@ let tests =
              ("export * as " ^ String.make 80 'a' ^ " from \"a\";");
            assert_statement_string ~ctxt ~pretty:true "export opaque type a = b;" )
          (* TODO: Flow does not parse this but should
-      assert_statement_string ~ctxt "export a,{b}from'a';";
-      assert_statement_string ~ctxt "export*as foo,{bar}from'a';"; *);
+            assert_statement_string ~ctxt "export a,{b}from'a';";
+            assert_statement_string ~ctxt "export*as foo,{bar}from'a';"; *);
          ( "default_export_declaration_statement" >:: fun ctxt ->
            assert_statement_string ~ctxt "export default a;";
            assert_statement_string ~ctxt "export default a=b;";
@@ -1883,9 +1876,11 @@ let tests =
              ("(" ^ a30 ^ ":" ^ a30 ^ ",..." ^ b30 ^ ":" ^ b30 ^ "):c=>{}") );
          ( "type_object" >:: fun ctxt ->
            assert_statement_string ~ctxt "type a={};";
+           assert_statement_string ~ctxt "type a={...};";
            assert_statement_string ~ctxt "type a={||};";
            assert_statement_string ~ctxt "type a={a:b};";
            assert_statement_string ~ctxt "type a={|a:b|};";
+           assert_statement_string ~ctxt "type a={a:b,...};";
            assert_statement_string ~ctxt "type a={+a:b};";
            assert_statement_string ~ctxt "type a={a?:b};";
            assert_statement_string ~ctxt "type a={a:?b};";
@@ -1895,8 +1890,20 @@ let tests =
            assert_statement_string ~ctxt "type a={a:b,c:d};";
            assert_statement_string ~ctxt "type a={...a};";
            assert_statement_string ~ctxt "type a={a:b,...a};";
-           assert_statement_string ~ctxt ~pretty:true "type a = {a: b};";
-           assert_statement_string ~ctxt ~pretty:true "type a = {a: b, c: d};";
+           assert_statement_string ~ctxt ~pretty:true "type a = { ... };";
+           assert_statement_string ~ctxt ~pretty:true "type a = { a: b };";
+           assert_statement_string ~ctxt ~pretty:true "type a = { a: b, ... };";
+           assert_statement_string
+             ~ctxt
+             ~pretty:true
+             ~opts:(no_bracket_spacing opts)
+             "type a = {a: b};";
+           assert_statement_string ~ctxt ~pretty:true "type a = { a: b, c: d };";
+           assert_statement_string
+             ~ctxt
+             ~pretty:true
+             ~opts:(no_bracket_spacing opts)
+             "type a = {a: b, c: d};";
            assert_statement_string
              ~ctxt
              ~pretty:true
@@ -1904,15 +1911,21 @@ let tests =
            assert_statement_string ~ctxt "type a={a():b};";
            assert_statement_string ~ctxt "type a={get a():b};";
            assert_statement_string ~ctxt "type a={set a():b};";
-           assert_statement_string ~ctxt ~pretty:true "type a = {set a(): b};";
+           assert_statement_string ~ctxt ~pretty:true "type a = { set a(): b };";
            assert_statement_string ~ctxt "type a={a?:()=>a};";
            assert_statement_string ~ctxt "type a={+a:()=>a};";
            assert_statement_string ~ctxt "type a={():a};";
            assert_statement_string ~ctxt "type a={[b]:a};";
            assert_statement_string ~ctxt "type a={[a:b]:a};";
            assert_statement_string ~ctxt "type a={+[a:b]:a};";
-           assert_statement_string ~ctxt ~pretty:true "type a = {+[a: b]: a};";
-           assert_statement_string ~ctxt "type a={a:b,+[a:b]:a,():a,c():b};" );
+           assert_statement_string ~ctxt ~pretty:true "type a = { +[a: b]: a };";
+           assert_statement_string ~ctxt "type a={a:b,+[a:b]:a,():a,c():b};";
+           (* TODO: the RHS should be indented *)
+           assert_statement_string ~ctxt ~pretty:true "type T =\n/* foo */\n{ ... };";
+           (* TODO: the RHS should be indented *)
+           assert_statement_string ~ctxt ~pretty:true "type T =\n/* foo */\n{\n  // bar\n  ...\n};";
+           assert_statement_string ~ctxt ~pretty:true "type T = {\n  // foo\n  ...\n};";
+           assert_statement_string ~ctxt ~pretty:true "type T = {\n  /* foo */\n  ...\n};" );
          ( "type_union_or_intersection" >:: fun ctxt ->
            assert_statement_string ~ctxt "type a=a|b;";
            assert_statement_string ~ctxt "type a=a|b|c;";
@@ -2079,7 +2092,7 @@ let tests =
            assert_output
              ~ctxt
              ~pretty:true
-             ( "switch (x) {\n"
+             ("switch (x) {\n"
              ^ "  case \"a\":\n"
              ^ "    x++;\n"
              ^ "    break;\n"
@@ -2088,7 +2101,7 @@ let tests =
              ^ "  case \"b\":\n"
              ^ "    x++;\n"
              ^ "    break;\n"
-             ^ "}" )
+             ^ "}")
              layout );
          ( "switch_case_space" >:: fun ctxt ->
            let assert_no_space ~ctxt expr =
@@ -2202,6 +2215,38 @@ let tests =
            in
            assert_output ~ctxt "with(x);" layout;
            assert_output ~ctxt ~pretty:true "with (x);" layout );
+         ( "indexed_access" >:: fun ctxt ->
+           let open Flow_ast.Type in
+           let layout =
+             Js_layout_generator.type_
+               ~opts
+               ( Loc.none,
+                 IndexedAccess
+                   {
+                     IndexedAccess._object = Ast_builder.Types.unqualified_generic "T";
+                     index = Ast_builder.Types.unqualified_generic "K";
+                     comments = None;
+                   } )
+           in
+           assert_output ~ctxt "T[K]" layout );
+         ( "optional_indexed_access" >:: fun ctxt ->
+           let open Flow_ast.Type in
+           let layout =
+             Js_layout_generator.type_
+               ~opts
+               ( Loc.none,
+                 OptionalIndexedAccess
+                   {
+                     OptionalIndexedAccess.indexed_access =
+                       {
+                         IndexedAccess._object = Ast_builder.Types.unqualified_generic "T";
+                         index = Ast_builder.Types.unqualified_generic "K";
+                         comments = None;
+                       };
+                     optional = true;
+                   } )
+           in
+           assert_output ~ctxt "T?.[K]" layout );
          ( "enum_of_boolean" >:: fun ctxt ->
            S.EnumDeclarations.(
              let layout ~explicit_type =
@@ -2313,6 +2358,39 @@ let tests =
              assert_output ~ctxt "enum E of symbol{A,B,}" layout;
              let pretty_output = "enum E of symbol {\n" ^ "  A,\n" ^ "  B,\n" ^ "}" in
              assert_output ~ctxt ~pretty:true pretty_output layout) );
+         ( "enum_with_unknown_members" >:: fun ctxt ->
+           S.EnumDeclarations.(
+             let layout =
+               Js_layout_generator.statement ~opts
+               @@ S.enum_declaration
+                    (I.identifier "E")
+                    (symbol_body
+                       ~has_unknown_members:true
+                       [defaulted_member (I.identifier "A"); defaulted_member (I.identifier "B")])
+             in
+             assert_output ~ctxt "enum E of symbol{A,B,...}" layout;
+             let pretty_output = "enum E of symbol {\n" ^ "  A,\n" ^ "  B,\n" ^ "  ...\n" ^ "}" in
+             assert_output ~ctxt ~pretty:true pretty_output layout) );
+         ( "enum_with_internal_comment" >:: fun ctxt ->
+           S.EnumDeclarations.(
+             let layout =
+               Js_layout_generator.statement ~opts
+               @@ S.enum_declaration
+                    (I.identifier "E")
+                    (symbol_body
+                       ~comments:
+                         Flow_ast.Syntax.
+                           {
+                             leading = [];
+                             trailing = [];
+                             internal =
+                               [Ast_builder.Comments.line ~on_newline:true " internal comment"];
+                           }
+                       [defaulted_member (I.identifier "A"); defaulted_member (I.identifier "B")])
+             in
+             assert_output ~ctxt "enum E of symbol{A,B,// internal comment\n}" layout;
+             let pretty_output = "enum E of symbol {\n  A,\n  B,\n  // internal comment\n  \n}" in
+             assert_output ~ctxt ~pretty:true pretty_output layout) );
          ( "arrow_function_with_function_return_type" >:: fun ctxt ->
            assert_expression_string ~ctxt "():((x)=>y)=>{}";
            assert_expression_string ~ctxt "():((x)=>y)%checks=>{}";
@@ -2384,7 +2462,7 @@ let tests =
              "switch (true) {\n  case a:\n    break;\n  //L\n  case b:\n    break;\n}" );
          ( "object_type_preserve_wrapping" >:: fun ctxt ->
            (* Object type that fits on single line with no wrapping is printed on single line *)
-           assert_statement_string ~ctxt ~pretty:true "type T = {a: 1};";
+           assert_statement_string ~ctxt ~pretty:true "type T = { a: 1 };";
            (* Object type that fits on single line but wraps is printed as wrapping *)
            assert_statement_string ~ctxt ~pretty:true "type T = {\n  a: 1,\n};" );
          ( "function_params_preserve_blank_lines_between_params" >:: fun ctxt ->
@@ -2503,7 +2581,15 @@ let tests =
            assert_statement
              ~ctxt
              ~pretty:true
-             ("function f(\n  " ^ a20 ^ ",\n  " ^ b20 ^ ",\n): {" ^ a20 ^ ": t, " ^ b20 ^ ": t} {}")
+             ("function f(\n  "
+             ^ a20
+             ^ ",\n  "
+             ^ b20
+             ^ ",\n): { "
+             ^ a20
+             ^ ": t, "
+             ^ b20
+             ^ ": t } {}")
              (statement_of_string
                 ("function f(" ^ a20 ^ ", " ^ b20 ^ "): {" ^ a20 ^ ": t, " ^ b20 ^ ": t} {}")) );
          ( "function_type_params_break_before_return_type" >:: fun ctxt ->
@@ -2513,7 +2599,7 @@ let tests =
            assert_statement
              ~ctxt
              ~pretty:true
-             ("type T = (\n  " ^ a20 ^ ",\n  " ^ b20 ^ "\n) => {" ^ a20 ^ ": t, " ^ b20 ^ ": t};")
+             ("type T = (\n  " ^ a20 ^ ",\n  " ^ b20 ^ "\n) => { " ^ a20 ^ ": t, " ^ b20 ^ ": t };")
              (statement_of_string
                 ("type T = (" ^ a20 ^ ", " ^ b20 ^ ") => {" ^ a20 ^ ": t, " ^ b20 ^ ": t};")) );
          ( "jsx_in_new_expression" >:: fun ctxt ->
@@ -2522,15 +2608,15 @@ let tests =
            assert_expression
              ~ctxt
              ~pretty:true
-             ( "new Foo(\n"
+             ("new Foo(\n"
              ^ "  a,\n"
              ^ "  <jsx>\n"
              ^ ("    " ^ a80 ^ "\n")
              ^ "  </jsx>,\n"
              ^ "  b,\n"
-             ^ ")" )
+             ^ ")")
              (expression_of_string
-                ( "new Foo(\n"
+                ("new Foo(\n"
                 ^ "  a,\n"
                 ^ "  (\n"
                 ^ "    <jsx>\n"
@@ -2538,5 +2624,5 @@ let tests =
                 ^ "    </jsx>\n"
                 ^ "  ),\n"
                 ^ "  b,\n"
-                ^ ")" )) );
+                ^ ")")) );
        ]

@@ -39,8 +39,8 @@ let rec merge_type cx =
   | (AnyT _, t)
   | (t, AnyT _) ->
     t
-  | (DefT (_, _, EmptyT _), t)
-  | (t, DefT (_, _, EmptyT _)) ->
+  | (DefT (_, _, EmptyT), t)
+  | (t, DefT (_, _, EmptyT)) ->
     t
   | (_, (DefT (_, _, MixedT _) as t))
   | ((DefT (_, _, MixedT _) as t), _) ->
@@ -114,7 +114,7 @@ let rec merge_type cx =
     (* Create an intermediate map of booleans indicating whether two objects can
      * be merged, based on the properties in each map. *)
     let merge_map =
-      SMap.merge
+      NameUtils.Map.merge
         (fun _ p1_opt p2_opt ->
           match (p1_opt, p2_opt) with
           | (None, None) -> None
@@ -179,13 +179,13 @@ let rec merge_type cx =
         Some (Some id)
     in
     (* Only merge objects if every property can be merged. *)
-    let should_merge = SMap.for_all (fun _ x -> x) merge_map in
+    let should_merge = NameUtils.Map.for_all (fun _ x -> x) merge_map in
     (* Don't merge objects with different prototypes. *)
     let should_merge = should_merge && o1.proto_t = o2.proto_t in
     (match (should_merge, obj_kind, merge_call) with
     | (true, Indexed _, Some call) ->
       let map =
-        SMap.merge
+        NameUtils.Map.merge
           (fun _ p1_opt p2_opt ->
             match (p1_opt, p2_opt) with
             (* Merge disjoint+exact objects. *)
@@ -270,7 +270,7 @@ let instantiate_poly_t cx t args =
         t
       ) else
         subst cx map t_
-  | DefT (_, _, EmptyT _)
+  | DefT (_, _, EmptyT)
   | DefT (_, _, MixedT _)
   | AnyT _
   | DefT (_, _, TypeT (_, AnyT _)) ->
@@ -309,17 +309,13 @@ let intersect_members cx members =
       map
 
 and instantiate_type = function
-  | ThisClassT (_, t)
+  | ThisClassT (_, t, _)
   | DefT (_, _, ClassT t)
   | (AnyT _ as t)
   | DefT (_, _, TypeT (_, t))
-  | (DefT (_, _, EmptyT _) as t) ->
+  | (DefT (_, _, EmptyT) as t) ->
     t
   | t -> "cannot instantiate non-class type " ^ string_of_ctor t |> assert_false
-
-let possible_types_of_use cx = function
-  | UseT (_, t) -> possible_types_of_type cx t
-  | _ -> []
 
 let string_of_extracted_type = function
   | Success t -> Printf.sprintf "Success (%s)" (Type.string_of_ctor t)
@@ -349,12 +345,19 @@ let to_command_result = function
 
 let find_props cx =
   Context.find_props cx
-  %> SMap.filter (fun key _ ->
-         (* Filter out keys that start with "$" *)
-         not (String.length key >= 1 && key.[0] = '$'))
+  %> NameUtils.Map.filter (fun key _ ->
+         match key with
+         | OrdinaryName key ->
+           (* Filter out keys that start with "$" *)
+           not (String.length key >= 1 && key.[0] = '$')
+         | InternalName _
+         | InternalModuleName _ ->
+           (* TODO we probably should filter out internal names too, but for now keeping behavior the same *)
+           true)
+  %> NameUtils.display_smap_of_namemap
 
 let resolve_tvar cx (_, id) =
-  let ts = possible_types cx id in
+  let ts = Flow_js_utils.possible_types cx id in
 
   (* The list of types returned by possible_types is often empty, and the
      most common reason is that we don't have enough type coverage to
@@ -366,7 +369,7 @@ let resolve_tvar cx (_, id) =
      code, or even we don't have enough type coverage. Irrespective of these
      changes, the above decision would continue to make sense: as errors
      become stricter, type resolution should become even more lenient to
-     improve failure tolerance.  *)
+     improve failure tolerance. *)
   List.fold_left
     (fun u t -> merge_type cx (t, u))
     (RAnyImplicit |> locationless_reason |> Unsoundness.unresolved_any)
@@ -375,22 +378,12 @@ let resolve_tvar cx (_, id) =
 let rec resolve_type cx = function
   | OpenT tvar -> resolve_tvar cx tvar |> resolve_type cx
   | AnnotT (_, t, _) -> resolve_type cx t
-  | MergedT (_, uses) ->
-    begin
-      match Base.List.(uses >>= possible_types_of_use cx) with
-      (* The unit of intersection is normally mixed, but MergedT is hacky and empty
-      fits better here *)
-      | [] -> locationless_reason REmpty |> EmptyT.make |> with_trust bogus_trust
-      | [x] -> x
-      | x :: y :: ts -> InterRep.make x y ts |> create_intersection
-    end
   | t -> t
 
 let rec extract_type cx this_t =
   match this_t with
   | OpenT _
-  | AnnotT _
-  | MergedT _ ->
+  | AnnotT _ ->
     resolve_type cx this_t |> extract_type cx
   | OptionalT { reason = _; type_ = ty; use_desc = _ }
   | MaybeT (_, ty) ->
@@ -401,6 +394,7 @@ let rec extract_type cx this_t =
   | DefT (_, _, ObjT _) as t -> Success t
   | DefT (_, _, EnumObjectT _) as t -> Success t
   | ExactT (_, t) -> extract_type cx t
+  | GenericT { bound; _ } -> extract_type cx bound
   | ModuleT _ as t -> SuccessModule t
   | ThisTypeAppT (_, c, _, ts_opt) ->
     let c = resolve_type cx c in
@@ -415,7 +409,7 @@ let rec extract_type cx this_t =
   | DefT (_, _, PolyT { t_out = sub_type; _ }) ->
     (* TODO: replace type parameters with stable/proper names? *)
     extract_type cx sub_type
-  | ThisClassT (_, DefT (_, _, InstanceT (static, _, _, _)))
+  | ThisClassT (_, DefT (_, _, InstanceT (static, _, _, _)), _)
   | DefT (_, _, ClassT (DefT (_, _, InstanceT (static, _, _, _)))) ->
     extract_type cx static
   | DefT (_, _, FunT _) as t -> Success t
@@ -423,15 +417,17 @@ let rec extract_type cx this_t =
   | UnionT _ as t -> Success t
   | DefT (reason, _, SingletonStrT _)
   | DefT (reason, _, StrT _) ->
-    get_builtin_type cx reason "String" |> extract_type cx
+    get_builtin_type cx reason (OrdinaryName "String") |> extract_type cx
   | DefT (reason, _, SingletonNumT _)
   | DefT (reason, _, NumT _) ->
-    get_builtin_type cx reason "Number" |> extract_type cx
+    get_builtin_type cx reason (OrdinaryName "Number") |> extract_type cx
   | DefT (reason, _, SingletonBoolT _)
   | DefT (reason, _, BoolT _) ->
-    get_builtin_type cx reason "Boolean" |> extract_type cx
-  | DefT (reason, _, SymbolT) -> get_builtin_type cx reason "Symbol" |> extract_type cx
-  | DefT (reason, _, CharSetT _) -> get_builtin_type cx reason "String" |> extract_type cx
+    get_builtin_type cx reason (OrdinaryName "Boolean") |> extract_type cx
+  | DefT (reason, _, SymbolT) ->
+    get_builtin_type cx reason (OrdinaryName "Symbol") |> extract_type cx
+  | DefT (reason, _, CharSetT _) ->
+    get_builtin_type cx reason (OrdinaryName "String") |> extract_type cx
   | DefT (_, _, IdxWrapper t) -> extract_type cx t
   | DefT (_, _, ReactAbstractComponentT _) as t -> Success t
   | ReposT (_, t)
@@ -443,10 +439,10 @@ let rec extract_type cx this_t =
   | DefT (reason, _, ArrT arrtype) ->
     let (builtin, elemt) =
       match arrtype with
-      | ArrayAT (elemt, _) -> (get_builtin cx "Array" reason, elemt)
+      | ArrayAT (elemt, _) -> (get_builtin cx (OrdinaryName "Array") reason, elemt)
       | TupleAT (elemt, _)
       | ROArrayAT elemt ->
-        (get_builtin cx "$ReadOnlyArray" reason, elemt)
+        (get_builtin cx (OrdinaryName "$ReadOnlyArray") reason, elemt)
     in
     let array_t = resolve_type cx builtin in
     Some [elemt] |> instantiate_poly_t cx array_t |> instantiate_type |> extract_type cx
@@ -457,7 +453,7 @@ let rec extract_type cx this_t =
   | DefT (_, _, ClassT _)
   | CustomFunT (_, _)
   | MatchingPropT (_, _, _)
-  | DefT (_, _, EmptyT _)
+  | DefT (_, _, EmptyT)
   | ExistsT _
   | InternalT (ExtendsT _)
   | FunProtoApplyT _
@@ -481,6 +477,7 @@ let rec extract_members ?(exclude_proto_members = false) cx = function
   | FailureAnyType -> FailureAnyType
   | FailureUnhandledType t -> FailureUnhandledType t
   | FailureUnhandledMembers t -> FailureUnhandledMembers t
+  | Success (GenericT { bound; _ }) -> extract_members ~exclude_proto_members cx (Success bound)
   | Success (DefT (_, _, InstanceT (_, super, _, { own_props; proto_props; _ }))) ->
     let members =
       SMap.fold
@@ -521,7 +518,7 @@ let rec extract_members ?(exclude_proto_members = false) cx = function
       Success (AugmentableSMap.augment super_flds ~with_bindings:members)
   | Success (DefT (_, _, ObjT { props_tmap = flds; proto_t = proto; _ })) ->
     let proto_reason = reason_of_t proto in
-    let rep = InterRep.make proto (get_builtin_type cx proto_reason "Object") [] in
+    let rep = InterRep.make proto (get_builtin_type cx proto_reason (OrdinaryName "Object")) [] in
     let proto_t = IntersectionT (proto_reason, rep) in
     let prot_members =
       if exclude_proto_members then
@@ -548,19 +545,26 @@ let rec extract_members ?(exclude_proto_members = false) cx = function
       | Some t -> Some (resolve_type cx t)
       | None -> None
     in
+    let named_exports = NameUtils.display_smap_of_namemap named_exports in
     SuccessModule (named_exports, cjs_export)
   | Success (DefT (_, _, FunT (static, proto, _))) ->
     let members = extract_members_as_map ~exclude_proto_members cx static in
     let prot_members = extract_members_as_map ~exclude_proto_members cx proto in
     Success (AugmentableSMap.augment prot_members ~with_bindings:members)
-  | Success (DefT (enum_reason, trust, EnumObjectT enum)) ->
+  | Success (DefT (enum_reason, trust, EnumObjectT enum) as enum_object_t) ->
     let { members; representation_t; _ } = enum in
-    let enum_t = mk_enum_type ~loc:(def_aloc_of_reason enum_reason) ~trust enum in
+    let enum_t = mk_enum_type ~trust enum_reason enum in
     let proto_members =
       if exclude_proto_members then
         SMap.empty
       else
-        let proto = get_builtin_typeapp cx enum_reason "$EnumProto" [enum_t; representation_t] in
+        let proto =
+          get_builtin_typeapp
+            cx
+            enum_reason
+            (OrdinaryName "$EnumProto")
+            [enum_object_t; enum_t; representation_t]
+        in
         (* `$EnumProto` has a null proto, so we set `exclude_proto_members` to true *)
         extract_members_as_map ~exclude_proto_members:true cx proto
     in
@@ -568,7 +572,7 @@ let rec extract_members ?(exclude_proto_members = false) cx = function
     Success (AugmentableSMap.augment proto_members ~with_bindings:result)
   | Success (IntersectionT (_, rep)) ->
     (* Intersection type should autocomplete for every property of
-         every type in the intersection *)
+       every type in the intersection *)
     let ts = InterRep.members rep in
     let members = Base.List.map ~f:(extract_members_as_map ~exclude_proto_members cx) ts in
     Success
@@ -578,7 +582,7 @@ let rec extract_members ?(exclude_proto_members = false) cx = function
          members)
   | Success (UnionT (_, rep)) ->
     (* Union type should autocomplete for only the properties that are in
-      * every type in the intersection *)
+       * every type in the intersection *)
     let ts = UnionRep.members rep in
     let members =
       ts

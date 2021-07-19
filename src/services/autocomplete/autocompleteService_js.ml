@@ -5,11 +5,20 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-open Autocomplete_js
 open Base.Result
-open ServerProt.Response
-open Parsing_heaps_utils
 open Loc_collections
+
+let loc_of_aloc = Parsing_heaps.Reader.loc_of_aloc
+
+let max_autoimport_suggestions = 100
+
+let default_autoimport_options =
+  Fuzzy_path.
+    {
+      default_options with
+      max_results = max_autoimport_suggestions;
+      num_threads = Base.Int.max 1 (Sys_utils.nbr_procs - 2);
+    }
 
 let autocomplete_suffix = "AUTO332"
 
@@ -34,31 +43,42 @@ let add_autocomplete_token contents line column =
     ^ Base.Option.value_map ~f ~default (Line.split_nth contents_with_token line)
     ^ Base.Option.value_map ~f ~default (Line.split_nth contents_with_token (line + 1)) )
 
-(* the autocomplete token inserts `suffix_len` characters, which are included
+(**
+ * the autocomplete token inserts `suffix_len` characters, which are included
  * in `ac_loc` returned by `Autocomplete_js`. They need to be removed before
- * showing `ac_loc` to the client. *)
+ * showing `ac_loc` to the client.
+ * Sometimes `ac_loc` ends on a different line than it starts.
+ * This happens mostly in two situations:
+ * with unclosed string literals: {|
+ *   foo["
+ *        ^
+ * |}
+ * and with unclosed bracket-syntax members:
+ *   foo[
+ *       ^
+ * In these situations, the code is malformed so the parser usually doesn't
+ * realize to close the AST node until a future line, so the `ac_loc` we get
+ * can end on a later line than it started.
+ * In these situations, moving the end position backwards by suffix_len can
+ * result in an end position with an invalid (negative) column number.
+ * It's also invalid for a completionItem's textEdit to have a target range
+ * that spans multiple lines.
+ * So when `ac_loc` ends on a different line than it starts, we just replace
+ * the end position with the start position. *)
 let remove_autocomplete_token_from_loc loc =
-  Loc.{ loc with _end = { loc._end with column = loc._end.column - suffix_len } }
+  let open Loc in
+  if loc.start.line = loc._end.line then
+    { loc with _end = { loc._end with column = loc._end.column - suffix_len } }
+  else
+    { loc with _end = loc.start }
 
-let autocomplete_result_to_json ~strip_root result =
-  let name = result.res_name in
-  Stdlib.ignore strip_root;
-  Hh_json.JSON_Object
-    [("name", Hh_json.JSON_String name); ("type", Hh_json.JSON_String result.res_ty)]
-
-let autocomplete_response_to_json ~strip_root response =
-  Hh_json.(
-    match response with
-    | Error error ->
-      JSON_Object
-        [
-          ("error", JSON_String error);
-          ("result", JSON_Array []);
-          (* TODO: remove this? kept for BC *)
-        ]
-    | Ok completions ->
-      let results = Base.List.map ~f:(autocomplete_result_to_json ~strip_root) completions in
-      JSON_Object [("result", JSON_Array results)])
+let remove_autocomplete_token =
+  let regexp = Str.regexp_string autocomplete_suffix in
+  fun str ->
+    match Str.bounded_split_delim regexp str 2 with
+    | [] -> ("", "")
+    | [str] -> (str, "")
+    | before :: after :: _ -> (before, after)
 
 let lsp_completion_of_type =
   let open Ty in
@@ -88,6 +108,7 @@ let lsp_completion_of_type =
   | Arr _
   | TypeOf _
   | Utility _
+  | IndexedAccess _
   | Mu _
   | CharSet _ ->
     Some Lsp.Completion.Variable
@@ -102,61 +123,69 @@ let lsp_completion_of_decl =
   | EnumDecl _ -> Lsp.Completion.Enum
   | ModuleDecl _ -> Lsp.Completion.Module
 
+let sort_text_of_rank rank = Some (Printf.sprintf "%020u" rank)
+
+let text_edit ?insert_text (name, loc) =
+  let newText = Base.Option.value ~default:name insert_text in
+  (loc, newText)
+
 let autocomplete_create_result
-    ?insert_text ?(rank = 0) ?(preselect = false) ?documentation ~exact_by_default (name, loc) ty =
-  let res_ty = Ty_printer.string_of_t_single_line ~with_comments:false ~exact_by_default ty in
-  let res_kind = lsp_completion_of_type ty in
+    ?insert_text
+    ?(rank = 0)
+    ?(preselect = false)
+    ?documentation
+    ~exact_by_default
+    ~log_info
+    (name, loc)
+    ty =
+  let type_ = Ty_printer.string_of_t_single_line ~with_comments:false ~exact_by_default ty in
+  let kind = lsp_completion_of_type ty in
+  let text_edits = [text_edit ?insert_text (name, loc)] in
+  let sort_text = sort_text_of_rank rank in
   {
-    res_loc = loc;
-    res_kind;
-    res_name = name;
-    res_insert_text = insert_text;
-    res_ty;
-    rank;
-    res_preselect = preselect;
-    res_documentation = documentation;
+    ServerProt.Response.Completion.kind;
+    name;
+    text_edits;
+    detail = type_;
+    sort_text;
+    preselect;
+    documentation;
+    log_info;
+    source = None;
+    type_ = Some type_;
   }
 
 let autocomplete_create_result_decl
-    ?insert_text ~rank ?(preselect = false) ?documentation ~exact_by_default (name, loc) d =
+    ?insert_text ~rank ?(preselect = false) ?documentation ~exact_by_default ~log_info (name, loc) d
+    =
   let open Ty in
-  match d with
-  | ModuleDecl _ ->
-    {
-      res_loc = loc;
-      res_kind = Some Lsp.Completion.Module;
-      res_name = name;
-      res_insert_text = insert_text;
-      res_ty = "module " ^ name;
-      rank;
-      res_preselect = preselect;
-      res_documentation = documentation;
-    }
-  | Ty.VariableDecl (_, ty) ->
-    {
-      res_loc = loc;
-      res_kind = Some Lsp.Completion.Variable;
-      res_name = name;
-      res_insert_text = insert_text;
-      res_ty = Ty_printer.string_of_t_single_line ~with_comments:false ~exact_by_default ty;
-      rank;
-      res_preselect = preselect;
-      res_documentation = documentation;
-    }
-  | d ->
-    {
-      res_loc = loc;
-      res_kind = Some (lsp_completion_of_decl d);
-      res_name = name;
-      res_insert_text = insert_text;
-      res_ty = Ty_printer.string_of_decl_single_line ~with_comments:false ~exact_by_default d;
-      rank;
-      res_preselect = preselect;
-      res_documentation = documentation;
-    }
+  let (kind, detail, type_) =
+    match d with
+    | ModuleDecl _ -> (Some Lsp.Completion.Module, "module " ^ name, None)
+    | Ty.VariableDecl (_, ty) ->
+      let type_ = Ty_printer.string_of_t_single_line ~with_comments:false ~exact_by_default ty in
+      (Some Lsp.Completion.Variable, type_, Some type_)
+    | d ->
+      let type_ = Ty_printer.string_of_decl_single_line ~with_comments:false ~exact_by_default d in
+      (Some (lsp_completion_of_decl d), type_, Some type_)
+  in
+  let text_edits = [text_edit ?insert_text (name, loc)] in
+  let sort_text = sort_text_of_rank rank in
+  {
+    ServerProt.Response.Completion.kind;
+    name;
+    text_edits;
+    detail;
+    sort_text;
+    preselect;
+    documentation;
+    log_info;
+    source = None;
+    type_;
+  }
 
 let autocomplete_create_result_elt
-    ?insert_text ?(rank = 0) ?preselect ?documentation ~exact_by_default (name, loc) elt =
+    ?insert_text ?(rank = 0) ?preselect ?documentation ~exact_by_default ~log_info (name, loc) elt =
   match elt with
   | Ty.Type t ->
     autocomplete_create_result
@@ -165,6 +194,7 @@ let autocomplete_create_result_elt
       ?preselect
       ?documentation
       ~exact_by_default
+      ~log_info
       (name, loc)
       t
   | Ty.Decl d ->
@@ -174,13 +204,13 @@ let autocomplete_create_result_elt
       ?preselect
       ?documentation
       ~exact_by_default
+      ~log_info
       (name, loc)
       d
 
 let ty_normalizer_options =
   Ty_normalizer_env.
     {
-      fall_through_merged = true;
       expand_internal_types = true;
       expand_type_aliases = false;
       flag_shadowed_type_params = true;
@@ -193,192 +223,15 @@ let ty_normalizer_options =
       max_depth = Some 50;
     }
 
+type ac_result = {
+  result: ServerProt.Response.Completion.t;
+  errors_to_log: string list;
+}
+
 type autocomplete_service_result =
-  | AcResult of {
-      results: ServerProt.Response.complete_autocomplete_result list;
-      errors_to_log: string list;
-    }
+  | AcResult of ac_result
   | AcEmpty of string
   | AcFatalError of string
-
-(* helper types for autocomplete_member *)
-module MemberInfo = struct
-  type 'a t = {
-    ty: 'a;
-    (* Autocomplete ranks members from primitive prototypes below user-defined members.
-     * `from_proto` indicates that the member is from a primitive prototype. *)
-    from_proto: bool;
-    (* If a member came from a possibly-null/undefined object, autocomplete may suggest
-     * that the user use optional chaining to access it.
-     * `from_nullable` indicates that the member is from a possibly-null/undefined object. *)
-    from_nullable: bool;
-  }
-
-  let map f info = { info with ty = f info.ty }
-
-  (*  There are two special cases we'll consider when recursively getting the members of
-   *  a constituent type in a union/intersection:
-   *  - `EmptyOrAny`:
-   *    the given type's member set is the universal set,
-   *    where each member's type is the given type.
-   *  - `Nullish`:
-   *    the given type is Void or Null.
-   *  `Normal` indicates a type which falls into neither of these special cases. *)
-  type membership_behavior =
-    | EmptyOrAny
-    | Nullish
-    | Normal
-
-  let membership_behavior =
-    let open Ty in
-    function
-    | Bot _
-    | Any _ ->
-      EmptyOrAny
-    | Void
-    | Null ->
-      Nullish
-    | _ -> Normal
-end
-
-(* returns (members, errors to log) *)
-let rec members_of_ty : Ty.t -> Ty.t MemberInfo.t SMap.t * string list =
-  let open Ty in
-  let ty_of_named_prop = function
-    | Field { t; optional = false; _ }
-    | Get t
-    | Set t ->
-      t
-    | Field { t; optional = true; _ } -> Union (t, Void, [])
-    | Method ft -> Fun ft
-  in
-  let members_of_obj obj_props =
-    obj_props
-    |> Base.List.fold_left ~init:(SMap.empty, []) ~f:(fun (mems1, errs1) prop ->
-           let (mems2, errs2) =
-             match prop with
-             | NamedProp { name; prop; from_proto } ->
-               ( SMap.singleton
-                   name
-                   MemberInfo.{ ty = ty_of_named_prop prop; from_proto; from_nullable = false },
-                 [] )
-             | SpreadProp ty -> members_of_ty ty
-             | CallProp _ -> (SMap.empty, [])
-           in
-           (SMap.union ~combine:(fun _ _ snd -> Some snd) mems1 mems2, errs1 @ errs2))
-  in
-  let members_of_union (t1, t2, ts) =
-    let ((t1_members, errs1), (t2_members, errs2), (ts_members, errss)) =
-      (members_of_ty t1, members_of_ty t2, Base.List.map ~f:members_of_ty ts |> List.split)
-    in
-    let errs = Base.List.concat (errs1 :: errs2 :: errss) in
-    let universe =
-      (* set union of all child members *)
-      List.fold_right
-        (SMap.merge (fun _ _ _ -> Some ()))
-        (t1_members :: t2_members :: ts_members)
-        SMap.empty
-    in
-    (* empty and any have all possible members *)
-    let (t1_members, t2_members, ts_members) =
-      let f ty ty_members =
-        let open MemberInfo in
-        match membership_behavior ty with
-        | EmptyOrAny ->
-          SMap.map (Fn.const { ty; from_proto = true; from_nullable = false }) universe
-        | Nullish ->
-          SMap.map
-            (* Bot is the identity of type union *)
-            (Fn.const { ty = Bot EmptyType; from_proto = true; from_nullable = true })
-            universe
-        | Normal -> ty_members
-      in
-      (f t1 t1_members, f t2 t2_members, List.map2 f ts ts_members)
-    in
-    let mems =
-      (* set intersection of members; type union upon overlaps *)
-      SMap.map (MemberInfo.map Nel.one) t1_members
-      |> List.fold_right
-           (SMap.merge (fun _ ty_opt tys_opt ->
-                let open MemberInfo in
-                match (ty_opt, tys_opt) with
-                | ( Some { ty; from_proto = fp; from_nullable = fn },
-                    Some { ty = tys; from_proto = fps; from_nullable = fns } ) ->
-                  (* We say that a member formed by unioning other members should be treated:
-                    * - as from a prototype only if all its constituent members are.
-                    * - as from a nullable object if any of its constituent members are. *)
-                  Some { ty = Nel.cons ty tys; from_proto = fp && fps; from_nullable = fn || fns }
-                | (None, _)
-                | (_, None) ->
-                  None))
-           (t2_members :: ts_members)
-      |> SMap.map
-           (MemberInfo.map (function
-               | (t, []) -> t
-               | (t1, t2 :: ts) -> Ty_utils.simplify_type ~merge_kinds:true (Union (t1, t2, ts))))
-    in
-    (mems, errs)
-  in
-  let members_of_intersection (t1, t2, ts) =
-    let ((t1_members, errs1), (t2_members, errs2), (ts_members, errss)) =
-      (members_of_ty t1, members_of_ty t2, Base.List.map ~f:members_of_ty ts |> List.split)
-    in
-    let errs = Base.List.concat (errs1 :: errs2 :: errss) in
-    let special_cases =
-      Base.List.filter_map
-        ~f:(fun ty ->
-          let open MemberInfo in
-          match membership_behavior ty with
-          | EmptyOrAny -> Some ty
-          | Nullish
-          | Normal ->
-            None)
-        (t1 :: t2 :: ts)
-    in
-    let mems =
-      (* set union of members; type intersection upon overlaps *)
-      SMap.map (MemberInfo.map Nel.one) t1_members
-      |> List.fold_right
-           (SMap.merge (fun _ ty_opt tys_opt ->
-                let open MemberInfo in
-                match (ty_opt, tys_opt) with
-                | ( Some { ty; from_proto = fp; from_nullable = fn },
-                    Some { ty = tys; from_proto = fps; from_nullable = fns } ) ->
-                  (* We say that a member formed by intersecting other members should be treated:
-                    * - as from a prototype only if all its constituent members are.
-                    * - as from a nullable object only if all its constituent members are. *)
-                  Some { ty = Nel.cons ty tys; from_proto = fp && fps; from_nullable = fn && fns }
-                | (Some info, None) -> Some (MemberInfo.map Nel.one info)
-                | (None, Some info) -> Some info
-                | (None, None) -> None))
-           (t2_members :: ts_members)
-      |> SMap.map (MemberInfo.map (List.fold_right Nel.cons special_cases))
-      |> SMap.map
-           (MemberInfo.map (function
-               | (t, []) -> t
-               | (t1, t2 :: ts) -> Ty_utils.simplify_type ~merge_kinds:true (Inter (t1, t2, ts))))
-    in
-    (mems, errs)
-  in
-  function
-  | Obj { obj_props; _ } -> members_of_obj obj_props
-  | Fun { fun_static; _ } -> members_of_ty fun_static
-  | Union (t1, t2, ts) -> members_of_union (t1, t2, ts)
-  | Inter (t1, t2, ts) -> members_of_intersection (t1, t2, ts)
-  | ( TVar _ | Bound _ | Generic _ | Symbol | Num _ | Str _ | Bool _ | NumLit _ | StrLit _
-    | BoolLit _ | Arr _ | Tup _ ) as t ->
-    (SMap.empty, [Printf.sprintf "members_of_ty unexpectedly applied to (%s)" (Ty_debug.dump_t t)])
-  | Any _
-  | Top
-  | Bot _
-  | Void
-  | Null
-  | InlineInterface _
-  | TypeOf _
-  | Utility _
-  | Mu _
-  | CharSet _ ->
-    (SMap.empty, [])
 
 let documentation_of_member ~reader ~cx ~typed_ast this name =
   match GetDef_js.extract_member_def ~reader cx this name with
@@ -391,128 +244,51 @@ let members_of_type
     ~reader
     ~exclude_proto_members
     ?(exclude_keys = SSet.empty)
-    ?(idx_hook = Stdlib.ignore)
+    ~tparams_rev
     cx
     file_sig
     typed_ast
-    this
-    ~tparams =
-  let genv = Ty_normalizer_env.mk_genv ~full_cx:cx ~file:(Context.file cx) ~typed_ast ~file_sig in
-  let this_ty_res =
-    Ty_normalizer.expand_members
+    type_ =
+  let ty_members =
+    Ty_members.extract
       ~include_proto_members:(not exclude_proto_members)
-      ~idx_hook
-      ~options:ty_normalizer_options
-      ~genv
-      Type.TypeScheme.{ tparams; type_ = this }
+      ~cx
+      ~typed_ast
+      ~file_sig
+      Type.TypeScheme.{ tparams_rev; type_ }
   in
-  let is_valid_member (s, _) =
-    (* filter out constructor, it shouldn't be called manually *)
-    s <> "constructor"
-    (* filter out indexer/call properties *)
-    && (not (String.length s >= 1 && s.[0] = '$'))
-    (* strip out members from prototypes which are implicitly created for internal reasons *)
-    && (not (Reason.is_internal_name s))
-    && (* exclude members the caller told us to exclude *)
-    not (SSet.mem s exclude_keys)
+  let include_valid_member (s, info) =
+    let open Reason in
+    match s with
+    | OrdinaryName "constructor"
+    | InternalName _
+    | InternalModuleName _ ->
+      None
+    (* TODO consider making the $-prefixed names internal *)
+    | OrdinaryName str when (String.length str >= 1 && str.[0] = '$') || SSet.mem str exclude_keys
+      ->
+      None
+    | OrdinaryName str -> Some (str, info)
   in
-  match this_ty_res with
-  | Error error -> return ([], [Ty_normalizer.error_to_string error])
-  | Ok (Ty.Any _) -> fail "not enough type information to autocomplete"
-  | Ok this_ty ->
-    let (mems, errs) = members_of_ty this_ty in
+  match ty_members with
+  | Error error -> fail error
+  | Ok Ty_members.{ members; errors; in_idx } ->
     return
-      ( mems
-        |> SMap.bindings
-        |> List.filter is_valid_member
+      ( members
+        |> NameUtils.Map.bindings
+        |> Base.List.filter_map ~f:include_valid_member
         |> List.map (fun (name, info) ->
-               (name, documentation_of_member ~reader ~cx ~typed_ast this name, info)),
-        match errs with
+               (name, documentation_of_member ~reader ~cx ~typed_ast type_ name, info)),
+        (match errors with
         | [] -> []
-        | _ :: _ -> Printf.sprintf "members_of_type %s" (Debug_js.dump_t cx this) :: errs )
-
-let autocomplete_member
-    ~reader
-    ~exclude_proto_members
-    ?exclude_keys
-    cx
-    file_sig
-    typed_ast
-    this
-    in_optional_chain
-    ac_loc
-    ~tparams =
-  let ac_loc = loc_of_aloc ~reader ac_loc |> remove_autocomplete_token_from_loc in
-  let in_idx = ref false in
-  let idx_hook () = in_idx := true in
-  let exact_by_default = Context.exact_by_default cx in
-  match
-    members_of_type
-      ~reader
-      ~exclude_proto_members
-      ?exclude_keys
-      ~idx_hook
-      cx
-      file_sig
-      typed_ast
-      this
-      ~tparams
-  with
-  | Error err -> AcFatalError err
-  | Ok (mems, errors_to_log) ->
-    let results =
-      mems
-      |> Base.List.map
-           ~f:(fun (name, documentation, MemberInfo.{ ty; from_proto; from_nullable }) ->
-             let rank =
-               if from_proto then
-                 1
-               else
-                 0
-             in
-             let opt_chain_ty =
-               Ty_utils.simplify_type ~merge_kinds:true (Ty.Union (Ty.Void, ty, []))
-             in
-             match (from_nullable, in_optional_chain, !in_idx) with
-             | (false, _, _)
-             | (_, _, true) ->
-               autocomplete_create_result ~rank ?documentation ~exact_by_default (name, ac_loc) ty
-             | (true, false, false) ->
-               let opt_chain_name = "?." ^ name in
-               let opt_chain_ac_loc = Loc.btwn (Loc.char_before ac_loc) ac_loc in
-               autocomplete_create_result
-                 ~insert_text:opt_chain_name
-                 ~rank
-                 ?documentation
-                 ~exact_by_default
-                 (opt_chain_name, opt_chain_ac_loc)
-                 opt_chain_ty
-             | (true, true, false) ->
-               autocomplete_create_result
-                 ~rank
-                 ?documentation
-                 ~exact_by_default
-                 (name, ac_loc)
-                 opt_chain_ty)
-    in
-    AcResult { results; errors_to_log }
-
-(* turns typed AST into normal AST so we can run Scope_builder on it *)
-(* TODO(vijayramamurthy): make scope builder polymorphic *)
-class type_killer (reader : Parsing_heaps.Reader.reader) =
-  object
-    inherit [ALoc.t, ALoc.t * Type.t, Loc.t, Loc.t] Flow_polymorphic_ast_mapper.mapper
-
-    method on_loc_annot x = loc_of_aloc ~reader x
-
-    method on_type_annot (x, _) = loc_of_aloc ~reader x
-  end
+        | _ :: _ -> Printf.sprintf "members_of_type %s" (Debug_js.dump_t cx type_) :: errors),
+        in_idx )
 
 (* The fact that we need this feels convoluted.
-    We started with a typed AST, then stripped the types off of it to run Scope_builder on it,
-    and now we go back to the typed AST to get the types of the locations we got from Scope_api.
-    We wouldn't need to do this separate pass if Scope_builder/Scope_api were polymorphic.
- *)
+   We run Scope_builder on the untyped AST and now we go back to the typed AST to get the types
+   of the locations we got from Scope_api. We wouldn't need to do this separate pass if
+   Scope_builder/Scope_api were polymorphic.
+*)
 class type_collector (reader : Parsing_heaps.Reader.reader) (locs : LocSet.t) =
   object
     inherit [ALoc.t, ALoc.t * Type.t, ALoc.t, ALoc.t * Type.t] Flow_polymorphic_ast_mapper.mapper
@@ -547,8 +323,9 @@ let documentation_of_loc ~options ~reader ~cx ~file_sig ~typed_ast loc =
   | Def_error _ ->
     None
 
-let local_value_identifiers ~options ~reader ~cx ~ac_loc ~file_sig ~typed_ast ~tparams =
-  let scope_info = Scope_builder.program ((new type_killer reader)#program typed_ast) in
+let local_value_identifiers
+    ~options ~reader ~cx ~genv ~ac_loc ~file_sig ~ast ~typed_ast ~tparams_rev =
+  let scope_info = Scope_builder.program ~with_types:false ast in
   let open Scope_api.With_Loc in
   (* get the innermost scope enclosing the requested location *)
   let (ac_scope_id, _) =
@@ -572,14 +349,14 @@ let local_value_identifiers ~options ~reader ~cx ~ac_loc ~file_sig ~typed_ast ~t
         let scope_vars = scope.Scope.defs |> SMap.map (fun Def.{ locs; _ } -> Nel.hd locs) in
 
         (* don't suggest lexically-scoped variables declared after the current location.
-          this filtering isn't perfect:
+           this filtering isn't perfect:
 
-            let foo = /* request here */
-                ^^^
-                def_loc
+             let foo = /* request here */
+                 ^^^
+                 def_loc
 
-          since def_loc is the location of the identifier within the declaration statement
-          (not the entire statement), we don't filter out foo when declaring foo. *)
+           since def_loc is the location of the identifier within the declaration statement
+           (not the entire statement), we don't filter out foo when declaring foo. *)
         let relevant_scope_vars =
           if scope.Scope.lexical then
             SMap.filter (fun _name def_loc -> Loc.compare def_loc ac_loc < 0) scope_vars
@@ -597,116 +374,353 @@ let local_value_identifiers ~options ~reader ~cx ~ac_loc ~file_sig ~typed_ast ~t
          (* TODO(vijayramamurthy) do something about sometimes failing to collect types *)
          Base.Option.map (LocMap.find_opt loc types) ~f:(fun type_ ->
              ( (name, documentation_of_loc ~options ~reader ~cx ~file_sig ~typed_ast loc),
-               Type.TypeScheme.{ tparams; type_ } )))
-  |> Ty_normalizer.from_schemes
-       ~options:ty_normalizer_options
-       ~genv:(Ty_normalizer_env.mk_genv ~full_cx:cx ~file:(Context.file cx) ~typed_ast ~file_sig)
+               Type.TypeScheme.{ tparams_rev; type_ } )))
+  |> Ty_normalizer.from_schemes ~options:ty_normalizer_options ~genv
+
+(* Roughly collects upper bounds of a type.
+ * This logic will be changed or made unnecessary once we have contextual typing *)
+let upper_bound_t_of_t ~cx =
+  let rec upper_bounds_of_t : Type.t -> Type.t list =
+    let open Base.List.Let_syntax in
+    function
+    | Type.OpenT (_, id) ->
+      let%bind use = Flow_js_utils.possible_uses cx id in
+      upper_bounds_of_use_t use
+    | t -> return t
+  and upper_bounds_of_use_t : Type.use_t -> Type.t list = function
+    | Type.ReposLowerT (_, _, use) -> upper_bounds_of_use_t use
+    | Type.UseT (_, t) -> upper_bounds_of_t t
+    | _ -> []
+  in
+  fun lb_type ->
+    let reason = TypeUtil.reason_of_t lb_type in
+    match upper_bounds_of_t lb_type with
+    | [] -> Type.MixedT.make reason (Trust.bogus_trust ())
+    | [upper_bound] -> upper_bound
+    | ub1 :: ub2 :: ubs -> Type.IntersectionT (reason, Type.InterRep.make ub1 ub2 ubs)
+
+let rec literals_of_ty acc ty =
+  match ty with
+  | Ty.Union (t1, t2, ts) -> Base.List.fold_left (t1 :: t2 :: ts) ~f:literals_of_ty ~init:acc
+  | Ty.StrLit _
+  | Ty.NumLit _
+  | Ty.BoolLit _ ->
+    ty :: acc
+  | Ty.Bool _ -> Ty.BoolLit true :: Ty.BoolLit false :: acc
+  | _ -> acc
+
+let autocomplete_literals ~cx ~genv ~tparams_rev ~ac_loc ~upper_bound =
+  let scheme = { Type.TypeScheme.tparams_rev; type_ = upper_bound } in
+  let options = { ty_normalizer_options with Ty_normalizer_env.expand_type_aliases = true } in
+  let upper_bound_ty =
+    match Ty_normalizer.from_scheme ~options ~genv scheme with
+    | Ok (Ty.Type ty) -> ty
+    | Ok (Ty.Decl _)
+    | Error _ ->
+      Ty.Top
+  in
+  (* TODO: since we're inserting values, we shouldn't really be using the Ty_printer *)
+  let exact_by_default = Context.exact_by_default cx in
+  (*let literals = Base.List.fold tys ~init:[] ~f:literals_of_ty in*)
+  let literals = literals_of_ty [] upper_bound_ty in
+  Base.List.map literals ~f:(fun ty ->
+      let name = Ty_printer.string_of_t_single_line ~with_comments:false ~exact_by_default ty in
+      (* TODO: if we had both the expanded and unexpanded type alias, we'd
+         use the unexpanded alias for `ty` and the expanded literal for `name`. *)
+      autocomplete_create_result
+        ~insert_text:name
+        ~rank:0
+        ~preselect:true
+        ~exact_by_default
+        ~log_info:"literal from upper bound"
+        (name, ac_loc)
+        ty)
+
+let src_dir_of_loc ac_loc =
+  Loc.source ac_loc |> Base.Option.map ~f:(fun key -> File_key.to_string key |> Filename.dirname)
+
+let flow_text_edit_of_lsp_text_edit { Lsp.TextEdit.range; newText } =
+  let loc = Flow_lsp_conversions.lsp_range_to_flow_loc range in
+  (loc, newText)
+
+let completion_item_of_autoimport
+    ~options ~reader ~src_dir ~ast ~ac_loc { Export_search.name; source; kind } =
+  match
+    Code_action_service.text_edits_of_import ~options ~reader ~src_dir ~ast kind name source
+  with
+  | None ->
+    {
+      ServerProt.Response.Completion.kind = Some Lsp.Completion.Variable;
+      name;
+      detail = "(global)" (* TODO: include the type *);
+      text_edits = [text_edit (name, ac_loc)];
+      sort_text = sort_text_of_rank 101 (* TODO: use a constant *);
+      preselect = false;
+      documentation = None;
+      log_info = "global";
+      source = None;
+      type_ = None;
+    }
+  | Some { Code_action_service.title; edits; from } ->
+    let edits = Base.List.map ~f:flow_text_edit_of_lsp_text_edit edits in
+    {
+      ServerProt.Response.Completion.kind = Some Lsp.Completion.Variable;
+      name;
+      detail = title (* TODO: include the type *);
+      text_edits = text_edit (name, ac_loc) :: edits;
+      sort_text = sort_text_of_rank 100 (* TODO: use a constant *);
+      preselect = false;
+      documentation = None;
+      log_info = "autoimport";
+      source = Some from;
+      type_ = None (* TODO: include the type *);
+    }
+
+let add_locals ~f locals set =
+  Base.List.iter ~f:(fun local -> Base.Hash_set.add set (f local)) locals
+
+let set_of_locals ~f locals =
+  let set = Base.Hash_set.create ~size:(Base.List.length locals) (module Base.String) in
+  add_locals ~f locals set;
+  set
+
+let is_reserved name kind =
+  if Export_index.kind_is_value kind then
+    Parser_env.is_reserved name || Parser_env.is_strict_reserved name
+  else
+    Parser_env.is_reserved_type name
+
+let append_completion_items_of_autoimports ~options ~reader ~ast ~ac_loc ~locals auto_imports acc =
+  let src_dir = src_dir_of_loc ac_loc in
+  Base.List.fold_left
+    ~init:acc
+    ~f:(fun acc auto_import ->
+      let { Export_search.name; kind; source = _ } = auto_import in
+      if is_reserved name kind || Base.Hash_set.mem locals name then
+        (* exclude reserved words and already-defined locals, because they can't be imported
+           without aliasing them, which we can't do automatically in autocomplete. for example,
+           `import {null} from ...` is invalid; and if we already have `const foo = ...` then
+           we can't auto-import another value named `foo`. *)
+        acc
+      else
+        let item =
+          completion_item_of_autoimport ~options ~reader ~src_dir ~ast ~ac_loc auto_import
+        in
+        item :: acc)
+    auto_imports
 
 (* env is all visible bound names at cursor *)
 let autocomplete_id
-    ~options ~reader ~cx ~ac_loc ~file_sig ~typed_ast ~include_super ~include_this ~tparams =
+    ~env
+    ~options
+    ~reader
+    ~cx
+    ~ac_loc
+    ~file_sig
+    ~ast
+    ~typed_ast
+    ~include_super
+    ~include_this
+    ~imports
+    ~tparams_rev
+    ~token
+    ~type_ =
+  (* TODO: filter to results that match `token` *)
+  let open ServerProt.Response.Completion in
   let ac_loc = loc_of_aloc ~reader ac_loc |> remove_autocomplete_token_from_loc in
   let exact_by_default = Context.exact_by_default cx in
-  let (results, errors_to_log) =
-    local_value_identifiers ~options ~reader ~cx ~ac_loc ~file_sig ~typed_ast ~tparams
+  let genv = Ty_normalizer_env.mk_genv ~full_cx:cx ~file:(Context.file cx) ~typed_ast ~file_sig in
+  let upper_bound = upper_bound_t_of_t ~cx type_ in
+  let results = autocomplete_literals ~cx ~genv ~tparams_rev ~ac_loc ~upper_bound in
+  let rank =
+    if results = [] then
+      0
+    else
+      1
+  in
+  let identifiers =
+    local_value_identifiers
+      ~options
+      ~reader
+      ~cx
+      ~genv
+      ~ac_loc
+      ~file_sig
+      ~typed_ast
+      ~ast
+      ~tparams_rev
+  in
+  let (items_rev, errors_to_log) =
+    identifiers
     |> List.fold_left
-         (fun (results, errors_to_log) ((name, documentation), elt_result) ->
+         (fun (items_rev, errors_to_log) ((name, documentation), elt_result) ->
            match elt_result with
            | Ok elt ->
              let result =
                autocomplete_create_result_elt
                  ~insert_text:name
+                 ~rank
                  ?documentation
                  ~exact_by_default
+                 ~log_info:"local value identifier"
                  (name, ac_loc)
                  elt
              in
-             (result :: results, errors_to_log)
+             (result :: items_rev, errors_to_log)
            | Error err ->
              let error_to_log = Ty_normalizer.error_to_string err in
-             (results, error_to_log :: errors_to_log))
-         ([], [])
+             (items_rev, error_to_log :: errors_to_log))
+         (results, [])
   in
   (* "this" is legal inside classes and (non-arrow) functions *)
-  let results =
+  let items_rev =
     if include_this then
       {
-        res_loc = ac_loc;
-        res_kind = Some Lsp.Completion.Variable;
-        res_name = "this";
-        res_ty = "this";
-        res_insert_text = Some "this";
-        rank = 0;
-        res_preselect = false;
-        res_documentation = None;
+        kind = Some Lsp.Completion.Variable;
+        name = "this";
+        detail = "this";
+        text_edits = [text_edit ("this", ac_loc)];
+        sort_text = sort_text_of_rank rank;
+        preselect = false;
+        documentation = None;
+        log_info = "this";
+        source = None;
+        type_ = None (* TODO: include the class type *);
       }
-      :: results
+      :: items_rev
     else
-      results
+      items_rev
   in
   (* "super" is legal inside classes *)
-  let results =
+  let items_rev =
     if include_super then
       {
-        res_loc = ac_loc;
-        res_kind = Some Lsp.Completion.Variable;
-        res_name = "super";
-        res_ty = "super";
-        res_insert_text = Some "super";
-        rank = 0;
-        res_preselect = false;
-        res_documentation = None;
+        kind = Some Lsp.Completion.Variable;
+        name = "super";
+        detail = "super";
+        text_edits = [text_edit ("super", ac_loc)];
+        sort_text = sort_text_of_rank rank;
+        preselect = false;
+        documentation = None;
+        log_info = "super";
+        source = None;
+        type_ = None (* TODO: include the parent class type *);
       }
-      :: results
+      :: items_rev
     else
-      results
+      items_rev
   in
-  AcResult { results; errors_to_log }
+  let (items_rev, is_incomplete) =
+    if imports then
+      let (before, _after) = remove_autocomplete_token token in
+      if before = "" then
+        (* for empty autocomplete requests (hitting ctrl-space without typing anything),
+           don't include any autoimport results, but do set `is_incomplete` so that
+           it queries again when you type something. *)
+        (items_rev, true)
+      else
+        let locals = set_of_locals ~f:(fun ((name, _docs), _ty) -> name) identifiers in
+        let { Export_search.results = auto_imports; is_incomplete } =
+          Export_search.search_values
+            ~options:default_autoimport_options
+            before
+            env.ServerEnv.exports
+        in
+        let items_rev =
+          append_completion_items_of_autoimports
+            ~options
+            ~reader
+            ~ast
+            ~ac_loc
+            ~locals
+            auto_imports
+            items_rev
+        in
+        (items_rev, is_incomplete)
+    else
+      (* if autoimports are not enabled, then we have all the results *)
+      (items_rev, false)
+  in
+  let result = { ServerProt.Response.Completion.items = List.rev items_rev; is_incomplete } in
+  { result; errors_to_log }
 
-(* Similar to autocomplete_member, except that we're not directly given an
-   object type whose members we want to enumerate: instead, we are given a
-   component class and we want to enumerate the members of its declared props
-   type, so we need to extract that and then route to autocomplete_member. *)
-let autocomplete_jsx ~reader cx file_sig typed_ast cls ac_name ~used_attr_names ac_loc ~tparams =
-  let open Flow_js in
-  let reason = Reason.mk_reason (Reason.RCustom ac_name) ac_loc in
-  let props_object =
-    Tvar.mk_where cx reason (fun tvar ->
-        let use_op = Type.Op Type.UnknownUse in
-        flow cx (cls, Type.ReactKitT (use_op, reason, Type.React.GetConfig tvar)))
-  in
-  let exact_by_default = Context.exact_by_default cx in
-  (* The `children` prop (if it exists) is set with the contents between the opening and closing
-   * elements, rather than through an explicit `children={...}` attribute, so we should exclude
-   * it from the autocomplete results, along with already used attribute names. *)
-  let exclude_keys = SSet.add "children" used_attr_names in
-  (* Only include own properties, so we don't suggest things like `hasOwnProperty` as potential JSX properties *)
-  let mems_result =
-    members_of_type
-      ~reader
-      ~exclude_proto_members:true
-      ~exclude_keys
-      cx
-      file_sig
-      typed_ast
-      props_object
-      ~tparams
-  in
-  let ac_loc = loc_of_aloc ~reader ac_loc |> remove_autocomplete_token_from_loc in
-  match mems_result with
-  | Error err -> AcFatalError err
-  | Ok (mems, errors_to_log) ->
-    let results =
-      mems
-      |> Base.List.map ~f:(fun (name, documentation, MemberInfo.{ ty; _ }) ->
-             autocomplete_create_result
-               ~insert_text:(name ^ "=")
-               ?documentation
-               ~exact_by_default
-               (name, ac_loc)
-               ty)
-    in
-    AcResult { results; errors_to_log }
+let type_exports_of_module_ty ~ac_loc ~exact_by_default ~documentation_of_module_member =
+  let open ServerProt.Response.Completion in
+  let open Ty in
+  function
+  | Decl (ModuleDecl { exports; _ }) ->
+    Base.List.filter_map
+      ~f:(function
+        | TypeAliasDecl { name = { Ty.sym_name; _ }; type_ = Some t; _ } as d ->
+          (* TODO consider omitting items with internal names throughout *)
+          let sym_name = Reason.display_string_of_name sym_name in
+          let type_ = Ty_printer.string_of_decl_single_line ~exact_by_default d in
+          Some
+            {
+              kind = lsp_completion_of_type t;
+              name = sym_name;
+              text_edits = [text_edit (sym_name, ac_loc)];
+              detail = type_;
+              sort_text = None;
+              preselect = false;
+              documentation = documentation_of_module_member sym_name;
+              log_info = "qualified type alias";
+              source = None;
+              type_ = Some type_;
+            }
+        | InterfaceDecl ({ Ty.sym_name; _ }, _) as d ->
+          let sym_name = Reason.display_string_of_name sym_name in
+          let type_ = Ty_printer.string_of_decl_single_line ~exact_by_default d in
+          Some
+            {
+              kind = Some Lsp.Completion.Interface;
+              name = sym_name;
+              text_edits = [text_edit (sym_name, ac_loc)];
+              detail = type_;
+              sort_text = None;
+              preselect = false;
+              documentation = documentation_of_module_member sym_name;
+              log_info = "qualified interface";
+              source = None;
+              type_ = Some type_;
+            }
+        | ClassDecl ({ Ty.sym_name; _ }, _) as d ->
+          let sym_name = Reason.display_string_of_name sym_name in
+          let type_ = Ty_printer.string_of_decl_single_line ~exact_by_default d in
+          Some
+            {
+              kind = Some Lsp.Completion.Class;
+              name = sym_name;
+              text_edits = [text_edit (sym_name, ac_loc)];
+              detail = type_;
+              sort_text = None;
+              preselect = false;
+              documentation = documentation_of_module_member sym_name;
+              log_info = "qualified class";
+              source = None;
+              type_ = Some type_;
+            }
+        | EnumDecl { Ty.sym_name; _ } as d ->
+          let sym_name = Reason.display_string_of_name sym_name in
+          let type_ = Ty_printer.string_of_decl_single_line ~exact_by_default d in
+          Some
+            {
+              kind = Some Lsp.Completion.Enum;
+              name = sym_name;
+              text_edits = [text_edit (sym_name, ac_loc)];
+              detail = type_;
+              sort_text = None;
+              preselect = false;
+              documentation = documentation_of_module_member sym_name;
+              log_info = "qualified enum";
+              source = None;
+              type_ = Some type_;
+            }
+        | _ -> None)
+      exports
+    |> Base.List.sort ~compare:(fun { name = a; _ } { name = b; _ } -> String.compare a b)
+    |> Base.List.mapi ~f:(fun i r -> { r with sort_text = sort_text_of_rank i })
+  | _ -> []
 
 (* TODO(vijayramamurthy) think about how to break this file down into smaller modules *)
 (* NOTE: excludes classes, because we'll get those from local_value_identifiers *)
@@ -738,14 +752,14 @@ class local_type_identifiers_searcher =
 
     method! import_declaration _ x =
       let open Flow_ast.Statement.ImportDeclaration in
-      let { importKind; specifiers; default; _ } = x in
+      let { import_kind; specifiers; default; _ } = x in
       let binds_type = function
         | ImportType
         | ImportTypeof ->
           true
         | ImportValue -> false
       in
-      let declaration_binds_type = binds_type importKind in
+      let declaration_binds_type = binds_type import_kind in
       if declaration_binds_type then Base.Option.iter default ~f:this#add_id;
       Base.Option.iter specifiers ~f:(function
           | ImportNamedSpecifiers specifiers ->
@@ -771,86 +785,34 @@ let local_type_identifiers ~typed_ast ~cx ~file_sig =
        ~options:ty_normalizer_options
        ~genv:(Ty_normalizer_env.mk_genv ~full_cx:cx ~file:(Context.file cx) ~typed_ast ~file_sig)
 
-let type_exports_of_module_ty ~ac_loc ~exact_by_default ~documentation_of_module_member =
-  let open Ty in
-  function
-  | Decl (ModuleDecl { exports; _ }) ->
-    Base.List.filter_map
-      ~f:(function
-        | TypeAliasDecl { name; type_ = Some t; _ } as d ->
-          Some
-            {
-              res_loc = ac_loc;
-              res_kind = lsp_completion_of_type t;
-              res_name = name.Ty.sym_name;
-              res_insert_text = None;
-              res_ty = Ty_printer.string_of_decl_single_line ~exact_by_default d;
-              rank = 0;
-              res_preselect = false;
-              res_documentation = documentation_of_module_member name.Ty_symbol.sym_name;
-            }
-        | InterfaceDecl (name, _) as d ->
-          Some
-            {
-              res_loc = ac_loc;
-              res_kind = Some Lsp.Completion.Interface;
-              res_name = name.Ty.sym_name;
-              res_insert_text = None;
-              res_ty = Ty_printer.string_of_decl_single_line ~exact_by_default d;
-              rank = 0;
-              res_preselect = false;
-              res_documentation = documentation_of_module_member name.Ty_symbol.sym_name;
-            }
-        | ClassDecl (name, _) as d ->
-          Some
-            {
-              res_loc = ac_loc;
-              res_kind = Some Lsp.Completion.Class;
-              res_name = name.Ty.sym_name;
-              res_insert_text = None;
-              res_ty = Ty_printer.string_of_decl_single_line ~exact_by_default d;
-              rank = 0;
-              res_preselect = false;
-              res_documentation = documentation_of_module_member name.Ty_symbol.sym_name;
-            }
-        | EnumDecl name as d ->
-          Some
-            {
-              res_loc = ac_loc;
-              res_kind = Some Lsp.Completion.Enum;
-              res_name = name.Ty.sym_name;
-              res_insert_text = None;
-              res_ty = Ty_printer.string_of_decl_single_line ~exact_by_default d;
-              rank = 0;
-              res_preselect = false;
-              res_documentation = documentation_of_module_member name.Ty_symbol.sym_name;
-            }
-        | _ -> None)
-      exports
-    |> Base.List.sort ~compare:(fun { res_name = a; _ } { res_name = b; _ } -> Stdlib.compare a b)
-    |> Base.List.mapi ~f:(fun i r -> { r with rank = i })
-  | _ -> []
-
-let autocomplete_unqualified_type ~options ~reader ~cx ~tparams ~file_sig ~ac_loc ~typed_ast =
+let autocomplete_unqualified_type
+    ~env ~options ~reader ~cx ~imports ~tparams_rev ~file_sig ~ac_loc ~ast ~typed_ast ~token =
+  (* TODO: filter to results that match `token` *)
+  let open ServerProt.Response.Completion in
   let ac_loc = loc_of_aloc ~reader ac_loc |> remove_autocomplete_token_from_loc in
   let exact_by_default = Context.exact_by_default cx in
   let tparam_results =
-    Base.List.map
-      ~f:(fun (_, name) ->
+    Base.List.fold_left
+      ~f:(fun acc { Type.name; _ } ->
         {
-          res_loc = ac_loc;
-          res_kind = Some Lsp.Completion.TypeParameter;
-          res_name = name;
-          res_ty = name;
-          res_insert_text = None;
-          rank = 0;
-          res_preselect = false;
-          res_documentation = None;
-        })
-      tparams
+          kind = Some Lsp.Completion.TypeParameter;
+          name;
+          detail = name;
+          text_edits = [text_edit (name, ac_loc)];
+          sort_text = sort_text_of_rank 0;
+          preselect = false;
+          documentation = None;
+          log_info = "unqualified type parameter";
+          source = None;
+          type_ = None;
+        }
+        :: acc)
+      ~init:[]
+      tparams_rev
   in
+  let type_identifiers = local_type_identifiers ~typed_ast ~cx ~file_sig in
   let (tparam_and_tident_results, tparam_and_tident_errors_to_log) =
-    local_type_identifiers ~typed_ast ~cx ~file_sig
+    type_identifiers
     |> List.fold_left
          (fun (results, errors_to_log) ((name, aloc), ty_result) ->
            let documentation =
@@ -860,7 +822,12 @@ let autocomplete_unqualified_type ~options ~reader ~cx ~tparams ~file_sig ~ac_lo
            match ty_result with
            | Ok elt ->
              let result =
-               autocomplete_create_result_elt ?documentation ~exact_by_default (name, ac_loc) elt
+               autocomplete_create_result_elt
+                 ?documentation
+                 ~exact_by_default
+                 ~log_info:"unqualified type: local type identifier"
+                 (name, ac_loc)
+                 elt
              in
              (result :: results, errors_to_log)
            | Error err ->
@@ -868,22 +835,41 @@ let autocomplete_unqualified_type ~options ~reader ~cx ~tparams ~file_sig ~ac_lo
              (results, error_to_log :: errors_to_log))
          (tparam_results, [])
   in
+  let genv = Ty_normalizer_env.mk_genv ~full_cx:cx ~file:(Context.file cx) ~typed_ast ~file_sig in
+  let value_identifiers =
+    local_value_identifiers
+      ~options
+      ~ast
+      ~typed_ast
+      ~reader
+      ~genv
+      ~ac_loc
+      ~tparams_rev
+      ~cx
+      ~file_sig
+  in
   (* The value-level identifiers we suggest in type autocompletion:
       - classes
+      - enums
       - modules (followed by a dot) *)
-  let (results, errors_to_log) =
-    local_value_identifiers ~options ~typed_ast ~reader ~ac_loc ~tparams ~cx ~file_sig
+  let (items, errors_to_log) =
+    value_identifiers
     |> List.fold_left
-         (fun (results, errors_to_log) ((name, documentation), ty_res) ->
+         (fun (items, errors_to_log) ((name, documentation), ty_res) ->
            match ty_res with
            | Error err ->
              let error_to_log = Ty_normalizer.error_to_string err in
-             (results, error_to_log :: errors_to_log)
+             (items, error_to_log :: errors_to_log)
            | Ok (Ty.Decl (Ty.ClassDecl _ | Ty.EnumDecl _) as elt) ->
              let result =
-               autocomplete_create_result_elt ?documentation ~exact_by_default (name, ac_loc) elt
+               autocomplete_create_result_elt
+                 ?documentation
+                 ~exact_by_default
+                 ~log_info:"unqualified type: class or enum"
+                 (name, ac_loc)
+                 elt
              in
-             (result :: results, errors_to_log)
+             (result :: items, errors_to_log)
            | Ok elt
              when type_exports_of_module_ty
                     ~ac_loc
@@ -895,19 +881,369 @@ let autocomplete_unqualified_type ~options ~reader ~cx ~tparams ~file_sig ~ac_lo
                autocomplete_create_result_elt
                  ?documentation
                  ~exact_by_default
+                 ~log_info:"unqualified type -> qualified type"
                  (name, ac_loc)
                  elt
                  ~insert_text:(name ^ ".")
              in
-             (result :: results, errors_to_log)
-           | Ok _ -> (results, errors_to_log))
+             (result :: items, errors_to_log)
+           | Ok _ -> (items, errors_to_log))
          (tparam_and_tident_results, tparam_and_tident_errors_to_log)
   in
-  AcResult { results; errors_to_log }
+  let result =
+    if imports then
+      let locals =
+        let set = set_of_locals ~f:(fun ((name, _aloc), _ty) -> name) type_identifiers in
+        add_locals ~f:(fun ((name, _docs), _ty) -> name) value_identifiers set;
+        set
+      in
+      let { Export_search.results = auto_imports; is_incomplete } =
+        let (before, _after) = remove_autocomplete_token token in
+        Export_search.search_types ~options:default_autoimport_options before env.ServerEnv.exports
+      in
+      let items =
+        append_completion_items_of_autoimports
+          ~options
+          ~reader
+          ~ast
+          ~ac_loc
+          ~locals
+          auto_imports
+          items
+      in
+      { ServerProt.Response.Completion.items; is_incomplete }
+    else
+      { ServerProt.Response.Completion.items; is_incomplete = false }
+  in
+  { result; errors_to_log }
 
-let autocomplete_qualified_type ~reader ~cx ~ac_loc ~file_sig ~typed_ast ~tparams ~qtype =
+let autocomplete_member
+    ~env
+    ~reader
+    ~options
+    ~cx
+    ~file_sig
+    ~ast
+    ~typed_ast
+    ~imports
+    ~token
+    this
+    in_optional_chain
+    ac_aloc
+    ~tparams_rev
+    ~bracket_syntax
+    ~member_loc
+    ~is_type_annotation =
+  let ac_loc =
+    let ac_loc = loc_of_aloc ~reader ac_aloc |> remove_autocomplete_token_from_loc in
+    (* If the token is a string literal, then the end of the token may be inaccurate
+     * due to parse errors. See tests/autocomplete/bracket_syntax_3.js for example. *)
+    match token.[0] with
+    | '\''
+    | '"' ->
+      Loc.{ ac_loc with _end = ac_loc.start }
+    | _ -> ac_loc
+  in
+  let exact_by_default = Context.exact_by_default cx in
+  (* When autocompleting a type annotation, it is extremely unlikely that someone wants the type
+   * of a member from the prototype of the object type. If they really want that they can get the
+   * type from the prototype directly. *)
+  let exclude_proto_members = is_type_annotation in
+  match members_of_type ~reader ~exclude_proto_members cx file_sig typed_ast this ~tparams_rev with
+  | Error err -> AcFatalError err
+  | Ok (mems, errors_to_log, in_idx) ->
+    let items =
+      mems
+      |> Base.List.map
+           ~f:(fun (name, documentation, Ty_members.{ ty; from_proto; from_nullable; def_loc = _ })
+              ->
+             let rank =
+               if from_proto then
+                 1
+               else
+                 0
+             in
+             let opt_chain_ty =
+               Ty_utils.simplify_type ~merge_kinds:true (Ty.Union (Ty.Void, ty, []))
+             in
+             let name_as_indexer =
+               lazy
+                 (let expression =
+                    match Base.String.chop_prefix ~prefix:"@@" name with
+                    | None -> Ast_builder.Expressions.literal (Ast_builder.Literals.string name)
+                    | Some symbol ->
+                      Ast_builder.Expressions.member_expression_ident_by_name
+                        (Ast_builder.Expressions.identifier "Symbol")
+                        symbol
+                  in
+                  expression
+                  |> Js_layout_generator.expression
+                       ~opts:(Code_action_service.layout_options options)
+                  |> Pretty_printer.print ~source_maps:None ~skip_endline:true
+                  |> Source.contents)
+             in
+             let name_is_valid_identifier = Parser_flow.string_is_valid_identifier_name name in
+             let edit_loc_of_member_loc member_loc =
+               if Loc.(member_loc.start.line = member_loc._end.line) then
+                 remove_autocomplete_token_from_loc member_loc
+               else
+                 Loc.{ member_loc with _end = member_loc.start }
+             in
+             match
+               ( from_nullable,
+                 in_optional_chain,
+                 in_idx,
+                 bracket_syntax,
+                 member_loc,
+                 name_is_valid_identifier )
+             with
+             (* TODO: only complete obj destructuring pattern when name is valid identifier *)
+             | (_, _, _, _, None, _)
+             | (false, _, _, None, _, true)
+             | (_, true, _, None, _, true)
+             | (_, _, true, None, _, true) ->
+               let ty =
+                 if from_nullable && in_optional_chain then
+                   opt_chain_ty
+                 else
+                   ty
+               in
+               autocomplete_create_result
+                 ~rank
+                 ?documentation
+                 ~exact_by_default
+                 ~log_info:"member"
+                 (name, ac_loc)
+                 ty
+             | (false, _, _, Some _, _, _)
+             | (_, true, _, Some _, _, _)
+             | (_, _, true, Some _, _, _) ->
+               let insert_text = Lazy.force name_as_indexer in
+               autocomplete_create_result
+                 ~insert_text
+                 ~rank
+                 ?documentation
+                 ~exact_by_default
+                 ~log_info:"bracket syntax member"
+                 (insert_text, ac_loc)
+                 ty
+             | (false, _, _, None, Some member_loc, false)
+             | (_, true, _, None, Some member_loc, false)
+             | (_, _, true, None, Some member_loc, false) ->
+               let insert_text = Printf.sprintf "[%s]" (Lazy.force name_as_indexer) in
+               autocomplete_create_result
+                 ~insert_text
+                 ~rank
+                 ?documentation
+                 ~exact_by_default
+                 ~log_info:"dot-member switched to bracket-syntax member"
+                 (insert_text, edit_loc_of_member_loc member_loc)
+                 ty
+             | (true, false, false, _, Some member_loc, _) ->
+               let opt_chain_name =
+                 match (bracket_syntax, name_is_valid_identifier) with
+                 | (None, true) -> Printf.sprintf "?.%s" name
+                 | (Some _, _)
+                 | (_, false) ->
+                   Printf.sprintf "?.[%s]" (Lazy.force name_as_indexer)
+               in
+               autocomplete_create_result
+                 ~insert_text:opt_chain_name
+                 ~rank
+                 ?documentation
+                 ~exact_by_default
+                 ~log_info:"start optional chain"
+                 (opt_chain_name, remove_autocomplete_token_from_loc member_loc)
+                 opt_chain_ty)
+    in
+    (match bracket_syntax with
+    | None ->
+      let result = { ServerProt.Response.Completion.items; is_incomplete = false } in
+      AcResult { result; errors_to_log }
+    | Some Autocomplete_js.{ include_this; include_super; type_ } ->
+      let {
+        result = { ServerProt.Response.Completion.items = id_items; is_incomplete };
+        errors_to_log = id_errors_to_log;
+      } =
+        if is_type_annotation then
+          autocomplete_unqualified_type
+            ~env
+            ~options
+            ~reader
+            ~cx
+            ~imports
+            ~tparams_rev
+            ~ac_loc:ac_aloc
+            ~ast
+            ~typed_ast
+            ~file_sig
+            ~token
+        else
+          autocomplete_id
+            ~env
+            ~options
+            ~reader
+            ~cx
+            ~ac_loc:ac_aloc
+            ~file_sig
+            ~ast
+            ~typed_ast
+            ~include_super
+            ~include_this
+            ~imports
+            ~tparams_rev
+            ~token
+            ~type_
+      in
+      let result = { ServerProt.Response.Completion.items = items @ id_items; is_incomplete } in
+      let errors_to_log = errors_to_log @ id_errors_to_log in
+      AcResult { result; errors_to_log })
+
+let rec binds_react = function
+  | File_sig.With_ALoc.BindIdent (_, name) -> name = "React"
+  | File_sig.With_ALoc.BindNamed bindings ->
+    Base.List.exists ~f:(fun (_remote, local) -> binds_react local) bindings
+
+(** Determines whether to autoimport React when autocompleting a JSX element.
+
+    By default JSX transforms into [React.createElement] which needs [React] to be
+    in scope. However, when [react.runtime=automatic] is set in [.flowconfig], this
+    happens behind the scenes.
+
+    We use a bit of a heuristic here. If [React] is imported or required anywhere
+    in the file, we won't autoimport it, even if it's not in scope for the JSX
+    component being completed. This is because imports are top-level so we'd cause
+    potential shadowing issues elsewhere in the file. *)
+let should_autoimport_react ~options ~imports ~file_sig =
+  if imports then
+    match Options.react_runtime options with
+    | Options.ReactRuntimeAutomatic -> false
+    | Options.ReactRuntimeClassic ->
+      let open File_sig.With_ALoc in
+      let requires_react =
+        Base.List.exists
+          ~f:(function
+            | Require { bindings = Some bindings; _ } -> binds_react bindings
+            | Import { ns = Some (_, "React"); _ } -> true
+            | Import { named; _ } ->
+              SMap.exists
+                (fun _remote local -> SMap.exists (fun name _locs -> name = "React") local)
+                named
+            | Require { bindings = None; _ }
+            | Import0 _
+            | ImportDynamic _ ->
+              false)
+          file_sig.module_sig.requires
+      in
+      not requires_react
+  else
+    false
+
+let autocomplete_jsx_element
+    ~env ~options ~reader ~cx ~ac_loc ~file_sig ~ast ~typed_ast ~imports ~tparams_rev ~token ~type_
+    =
+  let ({ result; errors_to_log } as results) =
+    autocomplete_id
+      ~env
+      ~options
+      ~reader
+      ~cx
+      ~ac_loc
+      ~file_sig
+      ~ast
+      ~typed_ast
+      ~include_super:false
+      ~include_this:false
+      ~imports
+      ~tparams_rev
+      ~token
+      ~type_
+  in
+  if should_autoimport_react ~options ~imports ~file_sig then
+    let open ServerProt.Response.Completion in
+    let import_edit =
+      let src_dir = src_dir_of_loc (loc_of_aloc ~reader ac_loc) in
+      let kind = Export_index.Namespace in
+      let name = "React" in
+      (* TODO: make this configurable between React and react *)
+      let source = Export_index.Builtin "react" in
+      Code_action_service.text_edits_of_import ~options ~reader ~src_dir ~ast kind name source
+    in
+    match import_edit with
+    | None -> AcResult results
+    | Some { Code_action_service.title = _; edits; from = _ } ->
+      let edits = Base.List.map ~f:flow_text_edit_of_lsp_text_edit edits in
+      let { items; _ } = result in
+      let items =
+        Base.List.map
+          ~f:(fun item ->
+            let { text_edits; _ } = item in
+            let text_edits = text_edits @ edits in
+            { item with text_edits })
+          items
+      in
+      let result = { result with items } in
+      AcResult { result; errors_to_log }
+  else
+    AcResult results
+
+(* Similar to autocomplete_member, except that we're not directly given an
+   object type whose members we want to enumerate: instead, we are given a
+   component class and we want to enumerate the members of its declared props
+   type, so we need to extract that and then route to autocomplete_member. *)
+let autocomplete_jsx_attribute
+    ~reader cx file_sig typed_ast cls ac_name ~used_attr_names ~has_value ac_loc ~tparams_rev =
+  let open Flow_js in
+  let reason = Reason.mk_reason (Reason.RCustom ac_name) ac_loc in
+  let props_object =
+    Tvar.mk_where cx reason (fun tvar ->
+        let use_op = Type.Op Type.UnknownUse in
+        flow cx (cls, Type.ReactKitT (use_op, reason, Type.React.GetConfig tvar)))
+  in
+  let exact_by_default = Context.exact_by_default cx in
+  (* The `children` prop (if it exists) is set with the contents between the opening and closing
+   * elements, rather than through an explicit `children={...}` attribute, so we should exclude
+   * it from the autocomplete results, along with already used attribute names. *)
+  let exclude_keys = SSet.add "children" used_attr_names in
+  (* Only include own properties, so we don't suggest things like `hasOwnProperty` as potential JSX properties *)
+  let mems_result =
+    members_of_type
+      ~reader
+      ~exclude_proto_members:true
+      ~exclude_keys
+      cx
+      file_sig
+      typed_ast
+      props_object
+      ~tparams_rev
+  in
   let ac_loc = loc_of_aloc ~reader ac_loc |> remove_autocomplete_token_from_loc in
-  let qtype_scheme = Type.TypeScheme.{ tparams; type_ = qtype } in
+  match mems_result with
+  | Error err -> AcFatalError err
+  | Ok (mems, errors_to_log, _) ->
+    let items =
+      mems
+      |> Base.List.map ~f:(fun (name, documentation, Ty_members.{ ty; _ }) ->
+             let insert_text =
+               if has_value then
+                 name
+               else
+                 name ^ "="
+             in
+             autocomplete_create_result
+               ~insert_text
+               ?documentation
+               ~exact_by_default
+               ~log_info:"jsx attribute"
+               (name, ac_loc)
+               ty)
+    in
+    let result = { ServerProt.Response.Completion.items; is_incomplete = false } in
+    AcResult { result; errors_to_log }
+
+let autocomplete_qualified_type ~reader ~cx ~ac_loc ~file_sig ~typed_ast ~tparams_rev ~qtype =
+  let ac_loc = loc_of_aloc ~reader ac_loc |> remove_autocomplete_token_from_loc in
+  let qtype_scheme = Type.TypeScheme.{ tparams_rev; type_ = qtype } in
   let exact_by_default = Context.exact_by_default cx in
   let module_ty_res =
     Ty_normalizer.from_scheme
@@ -916,66 +1252,222 @@ let autocomplete_qualified_type ~reader ~cx ~ac_loc ~file_sig ~typed_ast ~tparam
       qtype_scheme
   in
   let documentation_of_module_member = documentation_of_member ~reader ~cx ~typed_ast qtype in
-  match module_ty_res with
-  | Error err -> AcResult { results = []; errors_to_log = [Ty_normalizer.error_to_string err] }
-  | Ok module_ty ->
-    AcResult
-      {
-        results =
-          type_exports_of_module_ty
-            ~ac_loc
-            ~exact_by_default
-            ~documentation_of_module_member
-            module_ty;
-        errors_to_log = [];
-      }
+  let (items, errors_to_log) =
+    match module_ty_res with
+    | Error err -> ([], [Ty_normalizer.error_to_string err])
+    | Ok module_ty ->
+      ( type_exports_of_module_ty ~ac_loc ~exact_by_default ~documentation_of_module_member module_ty,
+        [] )
+  in
+  AcResult
+    { result = { ServerProt.Response.Completion.items; is_incomplete = false }; errors_to_log }
 
-let autocomplete_get_results ~options ~reader ~cx ~file_sig ~typed_ast trigger_character cursor =
-  let file_sig = File_sig.abstractify_locs file_sig in
-  match Autocomplete_js.process_location ~trigger_character ~cursor ~typed_ast with
-  | Some (_, _, Acbinding) -> ("Empty", AcEmpty "Binding")
-  | Some (_, _, Acignored) -> ("Empty", AcEmpty "Ignored")
-  | Some (_, _, Accomment) -> ("Empty", AcEmpty "Comment")
-  | Some (_, _, Acliteral) -> ("Empty", AcEmpty "Literal")
-  | Some (_, _, Acjsxtext) -> ("Empty", AcEmpty "JSXText")
-  | Some (_, _, Acmodule) ->
-    (* TODO: complete module names *)
-    ("Acmodule", AcEmpty "Module")
-  | Some (_, _, Ackey) ->
-    (* TODO: complete object keys based on their upper bounds *)
-    ("Ackey", AcResult { results = []; errors_to_log = [] })
-  | Some (tparams, ac_loc, Acid { include_super; include_this }) ->
-    ( "Acid",
-      autocomplete_id
-        ~options
+let autocomplete_object_key
+    ~reader ~options ~cx ~file_sig ~typed_ast ~token obj_type ac_aloc ~tparams_rev =
+  let ac_loc =
+    let ac_loc = loc_of_aloc ~reader ac_aloc |> remove_autocomplete_token_from_loc in
+    (* If the token is a string literal, then the end of the token may be inaccurate
+     * due to parse errors. See tests/autocomplete/bracket_syntax_3.js for example. *)
+    match token.[0] with
+    | '\''
+    | '"' ->
+      Loc.{ ac_loc with _end = ac_loc.start }
+    | _ -> ac_loc
+  in
+  let exact_by_default = Context.exact_by_default cx in
+  let exclude_keys =
+    match
+      members_of_type
         ~reader
-        ~cx
-        ~ac_loc
-        ~file_sig
-        ~typed_ast
-        ~include_super
-        ~include_this
-        ~tparams )
-  | Some (tparams, ac_loc, Acmem { obj_type; in_optional_chain }) ->
-    ( "Acmem",
-      autocomplete_member
-        ~reader
-        ~exclude_proto_members:false
+        ~exclude_proto_members:true
         cx
         file_sig
         typed_ast
         obj_type
-        in_optional_chain
-        ac_loc
-        ~tparams )
-  | Some (tparams, ac_loc, Acjsx (ac_name, used_attr_names, cls)) ->
-    ( "Acjsx",
-      autocomplete_jsx ~reader cx file_sig typed_ast cls ac_name ~used_attr_names ac_loc ~tparams )
-  | Some (tparams, ac_loc, Actype) ->
-    ( "Actype",
-      autocomplete_unqualified_type ~options ~reader ~cx ~tparams ~ac_loc ~typed_ast ~file_sig )
-  | Some (tparams, ac_loc, Acqualifiedtype qtype) ->
-    ( "Acqualifiedtype",
-      autocomplete_qualified_type ~reader ~cx ~ac_loc ~file_sig ~typed_ast ~tparams ~qtype )
+        ~tparams_rev
+    with
+    | Error _ -> SSet.empty
+    | Ok (mems, _, _) -> mems |> Base.List.map ~f:(fun (name, _, _) -> name) |> SSet.of_list
+  in
+  let upper_bound = upper_bound_t_of_t ~cx obj_type in
+  match
+    members_of_type
+      ~reader
+      ~exclude_keys
+      ~exclude_proto_members:true
+      cx
+      file_sig
+      typed_ast
+      upper_bound
+      ~tparams_rev
+  with
+  | Error err -> AcFatalError err
+  | Ok (mems, errors_to_log, _in_idx) ->
+    let items =
+      mems
+      |> Base.List.map ~f:(fun (name, documentation, Ty_members.{ ty; _ }) ->
+             let rank = 0 in
+             let name_is_valid_identifier = Parser_flow.string_is_valid_identifier_name name in
+             if name_is_valid_identifier then
+               autocomplete_create_result
+                 ~rank
+                 ?documentation
+                 ~exact_by_default
+                 ~log_info:"object key"
+                 (name, ac_loc)
+                 ty
+             else
+               let insert_text =
+                 let expression =
+                   match Base.String.chop_prefix ~prefix:"@@" name with
+                   | None -> Ast_builder.Expressions.literal (Ast_builder.Literals.string name)
+                   | Some symbol ->
+                     Ast_builder.Expressions.member_expression_ident_by_name
+                       (Ast_builder.Expressions.identifier "Symbol")
+                       symbol
+                 in
+                 expression
+                 |> Js_layout_generator.expression
+                      ~opts:(Code_action_service.layout_options options)
+                 |> Pretty_printer.print ~source_maps:None ~skip_endline:true
+                 |> Source.contents
+               in
+               autocomplete_create_result
+                 ~insert_text
+                 ~rank
+                 ?documentation
+                 ~exact_by_default
+                 ~log_info:"bracket syntax object key"
+                 (insert_text, ac_loc)
+                 ty)
+    in
+    let result = { ServerProt.Response.Completion.items; is_incomplete = false } in
+    AcResult { result; errors_to_log }
+
+let autocomplete_get_results
+    ~env ~options ~reader ~cx ~file_sig ~ast ~typed_ast ~imports trigger_character cursor =
+  let file_sig = File_sig.abstractify_locs file_sig in
+  let open Autocomplete_js in
+  match process_location ~trigger_character ~cursor ~typed_ast with
   | None ->
-    ("None", AcResult { results = []; errors_to_log = ["Autocomplete token not found in AST"] })
+    let result = { ServerProt.Response.Completion.items = []; is_incomplete = false } in
+    (None, ("None", AcResult { result; errors_to_log = ["Autocomplete token not found in AST"] }))
+  | Some { tparams_rev; ac_loc; token; autocomplete_type } ->
+    ( Some token,
+      (match autocomplete_type with
+      | Ac_binding -> ("Empty", AcEmpty "Binding")
+      | Ac_ignored -> ("Empty", AcEmpty "Ignored")
+      | Ac_comment -> ("Empty", AcEmpty "Comment")
+      | Ac_jsx_text -> ("Empty", AcEmpty "JSXText")
+      | Ac_class_key ->
+        (* TODO: include superclass keys *)
+        ("Ac_class_key", AcEmpty "ClassKey")
+      | Ac_module ->
+        (* TODO: complete module names *)
+        ("Acmodule", AcEmpty "Module")
+      | Ac_enum -> ("Acenum", AcEmpty "Enum")
+      | Ac_key { obj_type } ->
+        ( "Ackey",
+          autocomplete_object_key
+            ~reader
+            ~options
+            ~cx
+            ~file_sig
+            ~typed_ast
+            ~token
+            obj_type
+            ac_loc
+            ~tparams_rev )
+      | Ac_literal { lit_type } ->
+        let ac_loc = loc_of_aloc ~reader ac_loc |> remove_autocomplete_token_from_loc in
+        let genv =
+          Ty_normalizer_env.mk_genv ~full_cx:cx ~file:(Context.file cx) ~typed_ast ~file_sig
+        in
+        let upper_bound = upper_bound_t_of_t ~cx lit_type in
+        let items = autocomplete_literals ~cx ~genv ~tparams_rev ~ac_loc ~upper_bound in
+        let result = ServerProt.Response.Completion.{ items; is_incomplete = false } in
+        ("Acliteral", AcResult { result; errors_to_log = [] })
+      | Ac_id { include_super; include_this; type_ } ->
+        ( "Acid",
+          AcResult
+            (autocomplete_id
+               ~env
+               ~options
+               ~reader
+               ~cx
+               ~ac_loc
+               ~file_sig
+               ~ast
+               ~typed_ast
+               ~include_super
+               ~include_this
+               ~imports
+               ~tparams_rev
+               ~token
+               ~type_) )
+      | Ac_member { obj_type; in_optional_chain; bracket_syntax; member_loc; is_type_annotation } ->
+        ( "Acmem",
+          autocomplete_member
+            ~env
+            ~reader
+            ~options
+            ~cx
+            ~file_sig
+            ~ast
+            ~typed_ast
+            ~imports
+            ~token
+            obj_type
+            in_optional_chain
+            ac_loc
+            ~tparams_rev
+            ~bracket_syntax
+            ~member_loc
+            ~is_type_annotation )
+      | Ac_jsx_element { type_ } ->
+        ( "Ac_jsx_element",
+          autocomplete_jsx_element
+            ~env
+            ~options
+            ~reader
+            ~cx
+            ~ac_loc
+            ~file_sig
+            ~ast
+            ~typed_ast
+            ~imports
+            ~tparams_rev
+            ~token
+            ~type_ )
+      | Ac_jsx_attribute { attribute_name; used_attr_names; component_t; has_value } ->
+        ( "Acjsx",
+          autocomplete_jsx_attribute
+            ~reader
+            cx
+            file_sig
+            typed_ast
+            component_t
+            attribute_name
+            ~used_attr_names
+            ~has_value
+            ac_loc
+            ~tparams_rev )
+      | Ac_type ->
+        ( "Actype",
+          AcResult
+            (autocomplete_unqualified_type
+               ~env
+               ~options
+               ~reader
+               ~cx
+               ~imports
+               ~tparams_rev
+               ~ac_loc
+               ~ast
+               ~typed_ast
+               ~file_sig
+               ~token) )
+      | Ac_qualified_type qtype ->
+        ( "Acqualifiedtype",
+          autocomplete_qualified_type ~reader ~cx ~ac_loc ~file_sig ~typed_ast ~tparams_rev ~qtype
+        )) )

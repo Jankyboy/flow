@@ -13,9 +13,11 @@ type result =
   | Parse_ok of {
       ast: (Loc.t, Loc.t) Flow_ast.Program.t;
       file_sig: File_sig.With_Loc.t;
-      sig_extra: Parsing_heaps.sig_extra;
+      locs: Parsing_heaps.locs_tbl;
+      type_sig: Parsing_heaps.type_sig;
       tolerable_errors: File_sig.With_Loc.tolerable_error list;
       parse_errors: parse_error list;
+      exports: Exports.t;
     }
   | Parse_fail of parse_failure
   | Parse_skip of parse_skip_reason
@@ -23,6 +25,7 @@ type result =
 and parse_skip_reason =
   | Skip_resource_file
   | Skip_non_flow_file
+  | Skip_package_json of (parse_error list * package_json_error option)
 
 and parse_error = Loc.t * Parse_error.t
 
@@ -39,6 +42,8 @@ and docblock_error_kind =
   | MultipleJSXAttributes
   | InvalidJSXAttribute of string option
 
+and package_json_error = Loc.t * string
+
 (* results of parse job, returned by parse and reparse *)
 type results = {
   (* successfully parsed files *)
@@ -53,6 +58,8 @@ type results = {
   parse_fails: (File_key.t * Docblock.t * parse_failure) list;
   (* set of unchanged files *)
   parse_unchanged: FilenameSet.t;
+  (* package.json files parsed *)
+  parse_package_json: File_key.t list * package_json_error list;
 }
 
 let empty_result =
@@ -63,6 +70,7 @@ let empty_result =
     parse_hash_mismatch_skips = FilenameSet.empty;
     parse_fails = [];
     parse_unchanged = FilenameSet.empty;
+    parse_package_json = ([], []);
   }
 
 (**************************** internal *********************************)
@@ -80,13 +88,12 @@ type parse_options = {
   parse_prevent_munge: bool;
   parse_module_ref_prefix: string option;
   parse_facebook_fbt: string option;
-  parse_arch: Options.arch;
-  parse_abstract_locations: bool;
   parse_type_asserts: bool;
   parse_suppress_types: SSet.t;
   parse_max_literal_len: int;
   parse_exact_by_default: bool;
   parse_enable_enums: bool;
+  parse_node_main_fields: string list;
 }
 
 let parse_source_file ~fail ~types ~use_strict content file =
@@ -175,8 +182,8 @@ let docblock_max_tokens = 10
 let extract_docblock =
   Docblock.(
     (* walks a list of words, returns a list of errors and the extracted info.
-     if @flow or @providesModule is found more than once, the first one is used
-     and an error is returned. *)
+       if @flow or @providesModule is found more than once, the first one is used
+       and an error is returned. *)
     let rec parse_attributes (errors, info) = function
       | (loc, "@flow") :: (_, "strict") :: xs ->
         let acc =
@@ -192,14 +199,6 @@ let extract_docblock =
             ((loc, MultipleFlowAttributes) :: errors, info)
           else
             (errors, { info with flow = Some OptInStrictLocal })
-        in
-        parse_attributes acc xs
-      | (loc, "@flow") :: (_, "weak") :: xs ->
-        let acc =
-          if info.flow <> None then
-            ((loc, MultipleFlowAttributes) :: errors, info)
-          else
-            (errors, { info with flow = Some OptInWeak })
         in
         parse_attributes acc xs
       | (loc, "@flow") :: xs ->
@@ -317,8 +316,8 @@ let extract_docblock =
        * more context). At some point this should change back to consuming only
        * the first token. *)
       let lb =
-        try Sedlexing.Utf8.from_string content
-        with Sedlexing.MalFormed ->
+        try Sedlexing.Utf8.from_string content with
+        | Sedlexing.MalFormed ->
           Hh_logger.warn "File %s is malformed" (File_key.to_string filename);
           Sedlexing.Utf8.from_string ""
       in
@@ -382,29 +381,33 @@ let do_parse ~parse_options ~info content file =
     parse_prevent_munge = prevent_munge;
     parse_module_ref_prefix = module_ref_prefix;
     parse_facebook_fbt = facebook_fbt;
-    parse_arch = arch;
-    parse_abstract_locations = abstract_locations;
     parse_type_asserts = type_asserts;
     parse_suppress_types = suppress_types;
     parse_max_literal_len = max_literal_len;
     parse_exact_by_default = exact_by_default;
     parse_enable_enums = enable_enums;
+    parse_node_main_fields = node_main_fields;
   } =
     parse_options
   in
   try
     match file with
-    | File_key.JsonFile _ ->
-      let (ast, parse_errors) = parse_json_file ~fail content file in
-      (* NOTE: if ~fail:true, we'll never get parse errors here *)
-      Parse_ok
-        {
-          ast;
-          file_sig = File_sig.With_Loc.init;
-          sig_extra = Parsing_heaps.Classic;
-          tolerable_errors = [];
-          parse_errors;
-        }
+    | File_key.JsonFile str ->
+      if Filename.basename str = "package.json" then
+        let (ast, parse_errors) = parse_json_file ~fail content file in
+        let package = Package_json.parse ~node_main_fields ast in
+        let package_error_opt =
+          match package with
+          | Ok pkg ->
+            Package_heaps.Package_heap_mutator.add_package_json (File_key.to_string file) pkg;
+            None
+          | Error (loc, str) ->
+            Package_heaps.Package_heap_mutator.add_error (File_key.to_string file);
+            Some (loc, str)
+        in
+        Parse_skip (Skip_package_json (parse_errors, package_error_opt))
+      else
+        Parse_skip Skip_resource_file
     | File_key.ResourceFile _ -> Parse_skip Skip_resource_file
     | _ ->
       (* either all=true or @flow pragma exists *)
@@ -416,111 +419,48 @@ let do_parse ~parse_options ~info content file =
         let (ast, parse_errors) = parse_source_file ~fail ~types:true ~use_strict content file in
         let prevent_munge = Docblock.preventMunge info || prevent_munge in
         (* NOTE: This is a temporary hack that makes the signature verifier ignore any static
-            property named `propTypes` in any class. It should be killed with fire or replaced with
-            something that only works for React classes, in which case we must make a corresponding
-            change in the type system that enforces that any such property is private. *)
+           property named `propTypes` in any class. It should be killed with fire or replaced with
+           something that only works for React classes, in which case we must make a corresponding
+           change in the type system that enforces that any such property is private. *)
         let ignore_static_propTypes = true in
         (* NOTE: This is a Facebook-specific hack that makes the signature verifier and generator
-            recognize and process a custom `keyMirror` function that makes an enum out of the keys
-            of an object. *)
+           recognize and process a custom `keyMirror` function that makes an enum out of the keys
+           of an object. *)
         let facebook_keyMirror = true in
-        let exports_info = File_sig.With_Loc.program_with_exports_info ~ast ~module_ref_prefix in
-        (match exports_info with
+        (match File_sig.With_Loc.program ~ast ~module_ref_prefix with
         | Error e -> Parse_fail (File_sig_error e)
-        | Ok (exports_info, tolerable_errors) ->
-          let (env, errors, sig_extra) =
-            match arch with
-            | Options.Classic ->
-              let signature = Signature_builder.program ast ~exports_info in
-              let (errors, _, _) =
-                Signature_builder.Signature.verify
-                  ~prevent_munge
-                  ~facebook_fbt
-                  ~ignore_static_propTypes
-                  ~facebook_keyMirror
-                  signature
-              in
-              (None, errors, Parsing_heaps.Classic)
-            | Options.TypesFirst { new_signatures = false } ->
-              let signature = Signature_builder.program ast ~exports_info in
-              let (errors, env, sig_ast) =
-                Signature_builder.Signature.verify_and_generate
-                  ~prevent_munge
-                  ~facebook_fbt
-                  ~ignore_static_propTypes
-                  ~facebook_keyMirror
-                  signature
-                  ast
-              in
-              let env =
-                Some
-                  (SMap.map
-                     (fun lmap ->
-                       Loc_collections.LocMap.fold
-                         (fun loc _ acc -> Loc_collections.LocSet.add loc acc)
-                         lmap
-                         Loc_collections.LocSet.empty)
-                     env)
-              in
-              let sig_ast = Ast_loc_utils.loc_to_aloc_mapper#program sig_ast in
-              let (aloc_table, sig_ast) =
-                if abstract_locations then
-                  let (aloc_table, sig_ast) = Ast_loc_utils.keyify_alocs file sig_ast in
-                  (Some aloc_table, sig_ast)
-                else
-                  (None, sig_ast)
-              in
-              let (sig_file_sig, _) =
-                match File_sig.With_ALoc.program ~ast:sig_ast ~module_ref_prefix with
-                | Ok fs -> fs
-                | Error _ -> assert false
-              in
-              (env, errors, Parsing_heaps.TypesFirst { sig_ast; sig_file_sig; aloc_table })
-            | Options.TypesFirst { new_signatures = true } ->
-              let sig_opts =
-                {
-                  Type_sig_parse.type_asserts;
-                  suppress_types;
-                  munge = not prevent_munge;
-                  ignore_static_propTypes;
-                  facebook_keyMirror;
-                  facebook_fbt;
-                  max_literal_len;
-                  exact_by_default;
-                  module_ref_prefix;
-                  enable_enums;
-                }
-              in
-              let (errors, locs, type_sig) =
-                let strict = Docblock.is_strict info in
-                Type_sig_utils.parse_and_pack_module ~strict sig_opts (Some file) ast
-              in
-              (* TODO: extract env from type_sig *)
-              let env = None in
-              (* TODO: make type sig errors match signature builder errors *)
-              let errors =
-                List.fold_left
-                  (fun acc (loc, err) ->
-                    let loc = Type_sig_collections.Locs.get locs loc in
-                    let err = Signature_error.TODO (Type_sig.show_errno err, loc) in
-                    Signature_builder_deps.PrintableErrorSet.add err acc)
-                  Signature_builder_deps.PrintableErrorSet.empty
-                  errors
-              in
-              let aloc_table =
-                Type_sig_collections.Locs.to_array locs
-                |> ALoc.ALocRepresentationDoNotUse.make_table file
-              in
-              (env, errors, Parsing_heaps.TypeSig (type_sig, aloc_table))
+        | Ok (file_sig, tolerable_errors) ->
+          let sig_opts =
+            {
+              Type_sig_parse.type_asserts;
+              suppress_types;
+              munge = not prevent_munge;
+              ignore_static_propTypes;
+              facebook_keyMirror;
+              facebook_fbt;
+              max_literal_len;
+              exact_by_default;
+              module_ref_prefix;
+              enable_enums;
+            }
           in
+          let (sig_errors, locs, type_sig) =
+            let strict = Docblock.is_strict info in
+            Type_sig_utils.parse_and_pack_module ~strict sig_opts (Some file) ast
+          in
+          let exports = Exports.of_module type_sig in
           let tolerable_errors =
-            Signature_builder_deps.PrintableErrorSet.fold
-              (fun error acc -> File_sig.With_Loc.SignatureVerificationError error :: acc)
-              errors
+            List.fold_left
+              (fun acc (_, err) ->
+                match err with
+                | Type_sig.SigError err ->
+                  let err = Signature_error.map (Type_sig_collections.Locs.get locs) err in
+                  File_sig.With_Loc.SignatureVerificationError err :: acc
+                | Type_sig.CheckError -> acc)
               tolerable_errors
+              sig_errors
           in
-          let file_sig = File_sig.With_Loc.verified env exports_info in
-          Parse_ok { ast; file_sig; sig_extra; tolerable_errors; parse_errors })
+          Parse_ok { ast; file_sig; locs; type_sig; tolerable_errors; parse_errors; exports })
   with
   | Parse_error.Error (first_parse_error :: _) -> Parse_fail (Parse_error first_parse_error)
   | e ->
@@ -560,8 +500,8 @@ let reducer
    * probably get the delete event anyway *)
   let content =
     let filename_string = File_key.to_string file in
-    try Some (cat filename_string)
-    with e ->
+    try Some (cat filename_string) with
+    | e ->
       let e = Exception.wrap e in
       prerr_endlinef
         "Parsing service failed to cat %s, so skipping it. Exception: %s"
@@ -608,16 +548,29 @@ let reducer
           in
           begin
             match do_parse ~parse_options ~info content file with
-            | Parse_ok { ast; file_sig; sig_extra; tolerable_errors; parse_errors = _ } ->
+            | Parse_ok
+                { ast; file_sig; exports; locs; type_sig; tolerable_errors; parse_errors = _ } ->
               (* if parse_options.fail == true, then parse errors will hit Parse_fail below. otherwise,
                  ignore any parse errors we get here. *)
-              worker_mutator.Parsing_heaps.add_file file info (ast, file_sig) sig_extra;
+              worker_mutator.Parsing_heaps.add_file file ~exports info ast file_sig locs type_sig;
               let parse_ok = FilenameMap.add file tolerable_errors parse_results.parse_ok in
               { parse_results with parse_ok }
             | Parse_fail converted ->
               let fail = (file, info, converted) in
               let parse_fails = fail :: parse_results.parse_fails in
               { parse_results with parse_fails }
+            | Parse_skip (Skip_package_json (_parse_errors, package_json_error)) ->
+              (* if parse_options.fail == true, then parse errors will hit Parse_fail below. otherwise,
+                 ignore any parse errors we get here. *)
+              let parse_skips = (file, info) :: parse_results.parse_skips in
+              let (package_json, package_json_errors) = parse_results.parse_package_json in
+              let package_json_errors =
+                match package_json_error with
+                | Some e -> e :: package_json_errors
+                | None -> package_json_errors
+              in
+              let parse_package_json = (file :: package_json, package_json_errors) in
+              { parse_results with parse_skips; parse_package_json }
             | Parse_skip Skip_non_flow_file
             | Parse_skip Skip_resource_file ->
               let parse_skips = (file, info) :: parse_results.parse_skips in
@@ -642,6 +595,10 @@ let merge r1 r2 =
       FilenameSet.union r1.parse_hash_mismatch_skips r2.parse_hash_mismatch_skips;
     parse_fails = r1.parse_fails @ r2.parse_fails;
     parse_unchanged = FilenameSet.union r1.parse_unchanged r2.parse_unchanged;
+    parse_package_json =
+      (let (s1, e1) = r1.parse_package_json in
+       let (s2, e2) = r2.parse_package_json in
+       (List.rev_append s1 s2, List.rev_append e1 e2));
   }
 
 let opt_or_alternate opt alternate =
@@ -650,17 +607,17 @@ let opt_or_alternate opt alternate =
   | None -> alternate
 
 (* types_mode and use_strict aren't special, they just happen to be the ones that needed to be
-overridden *)
+   overridden *)
 let get_defaults ~types_mode ~use_strict options =
   let types_mode =
     opt_or_alternate
       types_mode
       (* force types when --all is set, but otherwise forbid them unless the file
-       has @flow in it. *)
-      ( if Options.all options then
+         has @flow in it. *)
+      (if Options.all options then
         TypesAllowed
       else
-        TypesForbiddenByDefault )
+        TypesForbiddenByDefault)
   in
   let use_strict = opt_or_alternate use_strict (Options.modules_are_use_strict options) in
   let profile = Options.should_profile options in
@@ -767,7 +724,6 @@ let reparse
   in
   let modified = FilenameSet.union modified results.parse_not_found_skips in
   let modified = FilenameSet.union modified results.parse_hash_mismatch_skips in
-  SharedMem_js.collect `gentle;
   let unchanged = FilenameSet.diff files modified in
   (* restore old parsing info for unchanged files *)
   Parsing_heaps.Reparse_mutator.revive_files master_mutator unchanged;
@@ -782,8 +738,6 @@ let make_parse_options_internal
   in
   let module_ref_prefix = Options.haste_module_ref_prefix options in
   let facebook_fbt = Options.facebook_fbt options in
-  let arch = Options.arch options in
-  let abstract_locations = Options.abstract_locations options in
   let prevent_munge =
     let default = not (Options.should_munge_underscores options) in
     match docblock with
@@ -797,13 +751,12 @@ let make_parse_options_internal
     parse_prevent_munge = prevent_munge;
     parse_module_ref_prefix = module_ref_prefix;
     parse_facebook_fbt = facebook_fbt;
-    parse_arch = arch;
-    parse_abstract_locations = abstract_locations;
     parse_type_asserts = Options.type_asserts options;
     parse_suppress_types = Options.suppress_types options;
     parse_max_literal_len = Options.max_literal_length options;
     parse_exact_by_default = Options.exact_by_default options;
     parse_enable_enums = Options.enums options;
+    parse_node_main_fields = Options.node_main_fields options;
   }
 
 let make_parse_options ?fail ?types_mode ?use_strict docblock options =
@@ -891,6 +844,7 @@ let ensure_parsed ~reader options workers files =
         parse_hash_mismatch_skips;
         parse_fails = _;
         parse_unchanged = _;
+        parse_package_json = _;
       } =
     parse
       ~worker_mutator

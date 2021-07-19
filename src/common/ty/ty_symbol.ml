@@ -11,8 +11,7 @@ type import_mode =
   | TypeofMode
 
 and imported_ident =
-  (ALoc.t * string * import_mode
-  [@printer (fun fmt (_, id, _) -> fprintf fmt "%s" id)])
+  (ALoc.t * string * import_mode[@printer (fun fmt (_, id, _) -> fprintf fmt "%s" id)])
 
 and remote_info = { imported_as: imported_ident option }
 
@@ -25,7 +24,7 @@ and provenance =
 and symbol = {
   sym_provenance: provenance;
   sym_def_loc: ALoc.t; [@printer (fun fmt loc -> fprintf fmt "%s" (ALoc.to_string_no_source loc))]
-  sym_name: string;
+  sym_name: Reason.name;
   sym_anonymous: bool;
 }
 [@@deriving show]

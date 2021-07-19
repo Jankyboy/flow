@@ -309,7 +309,7 @@ let tests =
            let { module_sig = { requires; _ }; _ } = visit source in
            match requires with
            | [Import { source = (_, "foo"); ns = Some (loc, "Foo"); _ }] ->
-             assert_substring_equal ~ctxt "* as Foo" source loc
+             assert_substring_equal ~ctxt "Foo" source loc
            | _ -> assert_failure "Unexpected requires" );
          ( "es_import_type" >:: fun ctxt ->
            let source = "import type A from 'foo'" in
@@ -382,7 +382,7 @@ let tests =
            let { module_sig = { requires; _ }; _ } = visit source in
            match requires with
            | [Import { source = (_, "foo"); typesof_ns = Some (loc, "Foo"); _ }] ->
-             assert_substring_equal ~ctxt "* as Foo" source loc
+             assert_substring_equal ~ctxt "Foo" source loc
            | _ -> assert_failure "Unexpected requires" );
          ( "cjs_default" >:: fun ctxt ->
            let source = "" in
@@ -698,7 +698,7 @@ let tests =
            let { declare_modules; _ } = visit source in
            let modules = declare_modules in
            assert_equal ~ctxt 1 (SMap.cardinal modules);
-           let (loc, { requires; module_kind; type_exports_named; type_exports_star; info = () }) =
+           let (loc, { requires; module_kind; type_exports_named; type_exports_star }) =
              SMap.find "foo" modules
            in
            assert_substring_equal ~ctxt source source loc;

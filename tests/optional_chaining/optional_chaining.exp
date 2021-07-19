@@ -368,8 +368,7 @@ References:
 
 Error ------------------------------------------------------------------------------------- computed_properties.js:22:14
 
-Cannot get `y1?.["baz"]["foo"]` because an index signature declaring the expected key / value type is missing in null or
-undefined [1]. [incompatible-use]
+Cannot get `y1?.["baz"]["foo"]` because null or undefined [1] does not have properties. [incompatible-use]
 
    computed_properties.js:22:14
    22| (y1?.["baz"]["foo"]: empty);
@@ -415,8 +414,7 @@ References:
 
 Error ------------------------------------------------------------------------------------- computed_properties.js:23:14
 
-Cannot get `y2?.["baz"]["foo"]` because an index signature declaring the expected key / value type is missing in null or
-undefined [1]. [incompatible-use]
+Cannot get `y2?.["baz"]["foo"]` because null or undefined [1] does not have properties. [incompatible-use]
 
    computed_properties.js:23:14
    23| (y2?.["baz"]["foo"]: empty);
@@ -430,8 +428,7 @@ References:
 
 Error -------------------------------------------------------------------------------------- computed_properties.js:25:5
 
-Cannot get `y1["bar"]` because an index signature declaring the expected key / value type is missing in null or
-undefined [1]. [incompatible-use]
+Cannot get `y1["bar"]` because null or undefined [1] does not have properties. [incompatible-use]
 
    computed_properties.js:25:5
    25| (y1["bar"]?.["foo"]: empty);
@@ -509,8 +506,7 @@ References:
 
 Error -------------------------------------------------------------------------------------- computed_properties.js:27:5
 
-Cannot get `y1["baz"]` because an index signature declaring the expected key / value type is missing in null or
-undefined [1]. [incompatible-use]
+Cannot get `y1["baz"]` because null or undefined [1] does not have properties. [incompatible-use]
 
    computed_properties.js:27:5
    27| (y1["baz"]?.["foo"]: empty);
@@ -611,8 +607,7 @@ References:
 
 Error ------------------------------------------------------------------------------------- computed_properties.js:30:16
 
-Cannot get `y1?.["bar"]["foo"]` because an index signature declaring the expected key / value type is missing in null or
-undefined [1]. [incompatible-use]
+Cannot get `y1?.["bar"]["foo"]` because null or undefined [1] does not have properties. [incompatible-use]
 
    computed_properties.js:30:16
    30| ((y1?.["bar"])["foo"]: empty);
@@ -675,8 +670,7 @@ References:
 
 Error ------------------------------------------------------------------------------------- computed_properties.js:32:16
 
-Cannot get `y1?.["baz"]["foo"]` because an index signature declaring the expected key / value type is missing in null or
-undefined [1]. [incompatible-use]
+Cannot get `y1?.["baz"]["foo"]` because null or undefined [1] does not have properties. [incompatible-use]
 
    computed_properties.js:32:16
    32| ((y1?.["baz"])["foo"]: empty);
@@ -690,8 +684,7 @@ References:
 
 Error ------------------------------------------------------------------------------------- computed_properties.js:32:16
 
-Cannot get `y1?.["baz"]["foo"]` because an index signature declaring the expected key / value type is missing in null or
-undefined [1]. [incompatible-use]
+Cannot get `y1?.["baz"]["foo"]` because null or undefined [1] does not have properties. [incompatible-use]
 
    computed_properties.js:32:16
    32| ((y1?.["baz"])["foo"]: empty);
@@ -722,8 +715,7 @@ References:
 
 Error ------------------------------------------------------------------------------------- computed_properties.js:33:16
 
-Cannot get `y2?.["baz"]["foo"]` because an index signature declaring the expected key / value type is missing in null or
-undefined [1]. [incompatible-use]
+Cannot get `y2?.["baz"]["foo"]` because null or undefined [1] does not have properties. [incompatible-use]
 
    computed_properties.js:33:16
    33| ((y2?.["baz"])["foo"]: empty);
@@ -2264,8 +2256,7 @@ References:
 
 Error --------------------------------------------------------------------------------------------- refinements.js:136:9
 
-Cannot get `c[1][0]` because an index signature declaring the expected key / value type is missing in null or
-undefined [1]. [incompatible-use]
+Cannot get `c[1][0]` because null or undefined [1] does not have properties. [incompatible-use]
 
    refinements.js:136:9
    136|   (c[1][0]: {}); // no
@@ -2498,9 +2489,7 @@ References:
 
 Error --------------------------------------------------------------------------------------------- refinements2.js:24:4
 
-Cannot cast `s.a` to union type because: [incompatible-cast]
- - Either number [1] is incompatible with null [2].
- - Or number [1] is incompatible with undefined [3].
+Cannot cast `s.a` to union type because number [1] is incompatible with literal union [2]. [incompatible-cast]
 
    refinements2.js:24:4
    24|   (s.a: (null | void)); // no for two reasons
@@ -2512,10 +2501,7 @@ References:
                      ^^^^^^ [1]
    refinements2.js:24:10
    24|   (s.a: (null | void)); // no for two reasons
-                ^^^^ [2]
-   refinements2.js:24:17
-   24|   (s.a: (null | void)); // no for two reasons
-                       ^^^^ [3]
+                ^^^^^^^^^^^ [2]
 
 
 Error --------------------------------------------------------------------------------------------- refinements2.js:24:6
@@ -2551,9 +2537,7 @@ References:
 
 Error --------------------------------------------------------------------------------------------- refinements2.js:34:4
 
-Cannot cast `s.a` to union type because: [incompatible-cast]
- - Either number [1] is incompatible with null [2].
- - Or number [1] is incompatible with undefined [3].
+Cannot cast `s.a` to union type because number [1] is incompatible with literal union [2]. [incompatible-cast]
 
    refinements2.js:34:4
    34|   (s.a: (null | void)); // no for two reasons
@@ -2565,10 +2549,7 @@ References:
                      ^^^^^^ [1]
    refinements2.js:34:10
    34|   (s.a: (null | void)); // no for two reasons
-                ^^^^ [2]
-   refinements2.js:34:17
-   34|   (s.a: (null | void)); // no for two reasons
-                       ^^^^ [3]
+                ^^^^^^^^^^^ [2]
 
 
 Error --------------------------------------------------------------------------------------------- refinements2.js:34:6
@@ -2604,9 +2585,7 @@ References:
 
 Error --------------------------------------------------------------------------------------------- refinements2.js:38:4
 
-Cannot cast `s.a` to union type because: [incompatible-cast]
- - Either number [1] is incompatible with null [2].
- - Or number [1] is incompatible with undefined [3].
+Cannot cast `s.a` to union type because number [1] is incompatible with literal union [2]. [incompatible-cast]
 
    refinements2.js:38:4
    38|   (s.a: (null | void)); // no for two reasons
@@ -2618,10 +2597,7 @@ References:
                      ^^^^^^ [1]
    refinements2.js:38:10
    38|   (s.a: (null | void)); // no for two reasons
-                ^^^^ [2]
-   refinements2.js:38:17
-   38|   (s.a: (null | void)); // no for two reasons
-                       ^^^^ [3]
+                ^^^^^^^^^^^ [2]
 
 
 Error --------------------------------------------------------------------------------------------- refinements2.js:38:6
@@ -2674,9 +2650,7 @@ References:
 
 Error --------------------------------------------------------------------------------------------- refinements2.js:46:4
 
-Cannot cast `s.a` to union type because: [incompatible-cast]
- - Either number [1] is incompatible with null [2].
- - Or number [1] is incompatible with undefined [3].
+Cannot cast `s.a` to union type because number [1] is incompatible with literal union [2]. [incompatible-cast]
 
    refinements2.js:46:4
    46|   (s.a: (null | void)); // no for two reasons
@@ -2688,10 +2662,7 @@ References:
                      ^^^^^^ [1]
    refinements2.js:46:10
    46|   (s.a: (null | void)); // no for two reasons
-                ^^^^ [2]
-   refinements2.js:46:17
-   46|   (s.a: (null | void)); // no for two reasons
-                       ^^^^ [3]
+                ^^^^^^^^^^^ [2]
 
 
 Error --------------------------------------------------------------------------------------------- refinements2.js:46:6

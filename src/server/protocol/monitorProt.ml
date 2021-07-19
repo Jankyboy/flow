@@ -10,19 +10,19 @@
 type request_id = string
 
 type file_watcher_metadata = {
-  total_update_distance: int;
   changed_mergebase: bool;
+  missed_changes: bool;
 }
 
-let empty_file_watcher_metadata = { total_update_distance = 0; changed_mergebase = false }
+let empty_file_watcher_metadata = { changed_mergebase = false; missed_changes = false }
 
 let merge_file_watcher_metadata a b =
   {
-    total_update_distance = a.total_update_distance + b.total_update_distance;
     changed_mergebase = a.changed_mergebase || b.changed_mergebase;
+    missed_changes = a.missed_changes || b.missed_changes;
   }
 
-type please_die_reason = MonitorExiting of (FlowExitStatus.t * string)
+type please_die_reason = MonitorExiting of (Exit.t * string)
 
 (* These are the messages that the monitor sends to the server *)
 type monitor_to_server_message =

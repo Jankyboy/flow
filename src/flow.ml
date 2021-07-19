@@ -30,13 +30,14 @@ end = struct
       DumpTypesCommand.command;
       FindModuleCommand.command;
       FindRefsCommand.command;
+      FixCommand.command;
       ForceRecheckCommand.command;
       GetDefCommand.command;
       GetImportsCommand.command;
+      GleanCommand.command;
       InitCommand.command;
       LspCommand.command;
       LsCommand.command;
-      RefactorCommand.command;
       SaveStateCommand.command;
       ServerCommand.command;
       StartCommand.command;
@@ -78,14 +79,15 @@ end = struct
         (try
            let command = List.find (fun command -> CommandSpec.name command = subcmd) commands in
            (command, rest)
-         with Not_found -> (default_command, next :: rest))
+         with
+        | Not_found -> (default_command, next :: rest))
     in
 
     let command_string = CommandSpec.name command in
     FlowEventLogger.set_command (Some command_string);
 
     let init_id = Random_id.short_string () in
-    FlowEventLogger.init_flow_command ~init_id ~version:Flow_version.version;
+    FlowEventLogger.init_flow_command ~init_id;
 
     CommandUtils.run_command command argv
 end
@@ -98,7 +100,7 @@ let _ =
 
      We don't like being killed uncleanly like that. By ignoring SIGPIPE, the write() syscall that
      normally would cause a SIGPIPE instead throws an EPIPE exception. We handle exceptions and
-     exit via FlowExitStatus.exit instead. *)
+     exit via Exit.exit instead. *)
   let () = Sys_utils.set_signal Sys.sigpipe Sys.Signal_ignore in
   let () = Exception.record_backtrace true in
   let () = if Sys_utils.get_env "IN_FLOW_TEST" <> None then LoggingUtils.disable_logging () in
@@ -108,22 +110,22 @@ let _ =
     (* this call might not return *)
     FlowShell.main ()
   with
-  | SharedMem_js.Out_of_shared_memory as e ->
+  | SharedMem.Out_of_shared_memory as e ->
     let e = Exception.wrap e in
     let bt = Exception.get_backtrace_string e in
     let msg =
       Utils.spf
         "Out of shared memory%s"
-        ( if bt = "" then
+        (if bt = "" then
           bt
         else
-          ":\n" ^ bt )
+          ":\n" ^ bt)
     in
-    FlowExitStatus.(exit ~msg Out_of_shared_memory)
+    Exit.(exit ~msg Out_of_shared_memory)
   | e ->
     let e = Exception.wrap e in
     let msg = Utils.spf "Unhandled exception: %s" (Exception.to_string e) in
-    FlowExitStatus.(exit ~msg Unknown_error)
+    Exit.(exit ~msg Unknown_error)
 
 (* If we haven't exited yet, let's exit now for logging's sake *)
-let _ = FlowExitStatus.(exit No_error)
+let _ = Exit.(exit No_error)

@@ -43,7 +43,7 @@ let mk_pp_loc locs =
     else
       fprintf fmt "[%d:%d-%d:%d]" loc.start.line loc.start.column loc._end.line loc._end.column
 
-let pp_exports pp_loc = Pack.pp_exports pp_loc
+let pp_module_kind pp_loc = Pack.pp_module_kind pp_loc
 
 let pp_pattern pp_loc = Pack.pp_pattern pp_loc
 
@@ -61,14 +61,6 @@ let pp_module_refs fmt module_refs =
       fprintf fmt "%d. %s" (i :> int) mref;
       pp_print_newline fmt ())
     module_refs
-
-let pp_export_def pp_loc fmt = function
-  | None -> ()
-  | Some def ->
-    let open Format in
-    fprintf fmt "@.Export_def:@.";
-    pp_packed pp_loc fmt def;
-    pp_print_newline fmt ()
 
 let pp_local_defs pp_loc fmt local_defs =
   let open Format in
@@ -120,27 +112,37 @@ let pp_errors pp_loc fmt errs =
 
 let pp_sig
     fmt
-    (errs, locs, (exports, export_def, module_refs, local_defs, remote_refs, pattern_defs, patterns))
-    =
+    ( errs,
+      locs,
+      {
+        Packed_type_sig.Module.module_kind;
+        module_refs;
+        local_defs;
+        remote_refs;
+        pattern_defs;
+        patterns;
+      } ) =
   let open Format in
   let pp_loc = mk_pp_loc locs in
-  pp_exports pp_loc fmt exports;
+  pp_module_kind pp_loc fmt module_kind;
   pp_print_newline fmt ();
   pp_module_refs fmt module_refs;
-  pp_export_def pp_loc fmt export_def;
   pp_local_defs pp_loc fmt local_defs;
   pp_remote_refs pp_loc fmt remote_refs;
   pp_pattern_defs pp_loc fmt pattern_defs;
   pp_patterns pp_loc fmt patterns;
   pp_errors pp_loc fmt errs
 
-let pp_builtin_module pp_loc fmt (_loc, exports, export_def) =
+let pp_builtin_module pp_loc fmt { Packed_type_sig.Builtins.loc; module_kind } =
   let open Format in
-  pp_exports pp_loc fmt exports;
-  pp_print_newline fmt ();
-  pp_export_def pp_loc fmt export_def
+  fprintf fmt "%a " pp_loc loc;
+  pp_module_kind pp_loc fmt module_kind
 
-let pp_builtins fmt (errs, locs, (module_refs, local_defs, remote_refs, _globals, modules)) =
+let pp_builtins
+    fmt
+    ( errs,
+      locs,
+      { Packed_type_sig.Builtins.module_refs; local_defs; remote_refs; globals = _; modules } ) =
   let open Format in
   let pp_loc = mk_pp_loc locs in
   pp_module_refs fmt module_refs;
@@ -239,7 +241,7 @@ let print_builtins ordered_contents_indent =
       ordered_contents_indent
   in
   let sig_opts = sig_options () in
-  let builtins = Type_sig_utils.(pack_builtins (parse_libs sig_opts ordered_asts)) in
+  let builtins = Type_sig_utils.parse_and_pack_builtins sig_opts ordered_asts in
   let fmt = make_test_formatter () in
   pp_builtins fmt builtins
 
@@ -251,12 +253,13 @@ let%expect_test "export_number_literal" =
     export default 0;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value (NumberLit ([1:15-16], 0., "0")))
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [1:7-14]; def = (Value (NumberLit ([1:15-16], 0., "0")))}|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
   |}]
 
 let%expect_test "export_function_literal" =
@@ -264,20 +267,25 @@ let%expect_test "export_function_literal" =
     export default function(x: number): number { return x };
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       FunExpr {loc = [1:15-55]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono;
-           params = [FunParam {name = (Some "x"); t = (Annot (Number [1:27-33]))}];
-           rest_param = None; return = (Annot (Number [1:36-42]));
-           predicate = None};
-         statics = {}})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [1:7-14];
+          def =
+          (Value
+             FunExpr {loc = [1:15-55];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params = [FunParam {name = (Some "x"); t = (Annot (Number [1:27-33]))}];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Number [1:36-42]));
+                 predicate = None};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
   |}]
 
 let%expect_test "export_function_literal_check1" =
@@ -285,22 +293,30 @@ let%expect_test "export_function_literal_check1" =
     export default function(x): number { return x };
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       FunExpr {loc = [1:15-47]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono; params = [FunParam {name = (Some "x"); t = (Err [1:25])}];
-           rest_param = None; return = (Annot (Number [1:28-34]));
-           predicate = None};
-         statics = {}})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [1:7-14];
+          def =
+          (Value
+             FunExpr {loc = [1:15-47];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params = [FunParam {name = (Some "x"); t = (Err [1:24-25])}];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Number [1:28-34]));
+                 predicate = None};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Errors:
-    ([1:25], MissingAnnotation)
+    ([1:24-25],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([1:24-25], Expected_annotation_sort.ArrayPattern))))
   |}]
 
 let%expect_test "export_function_literal_check2" =
@@ -308,23 +324,30 @@ let%expect_test "export_function_literal_check2" =
     export default function(x: number) { return x };
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       FunExpr {loc = [1:15-47]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono;
-           params = [FunParam {name = (Some "x"); t = (Annot (Number [1:27-33]))}];
-           rest_param = None; return = (Err [1:34]);
-           predicate = None};
-         statics = {}})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [1:7-14];
+          def =
+          (Value
+             FunExpr {loc = [1:15-47];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params = [FunParam {name = (Some "x"); t = (Annot (Number [1:27-33]))}];
+                 rest_param = None; this_param = None;
+                 return = (Err [1:34]);
+                 predicate = None};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Errors:
-    ([1:34], MissingAnnotation)
+    ([1:34],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([1:34], Expected_annotation_sort.FunctionReturn))))
   |}]
 
 let%expect_test "export_function_reference" =
@@ -333,12 +356,15 @@ let%expect_test "export_function_reference" =
     export default foo;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [2:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [2:15-18]; index = 0})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [2:7-14];
+          def = (Ref LocalRef {ref_loc = [2:15-18]; index = 0})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. FunBinding {id_loc = [1:9-12];
@@ -347,7 +373,8 @@ let%expect_test "export_function_reference" =
          def =
          FunSig {tparams = Mono;
            params = [FunParam {name = (Some "x"); t = (Annot (Number [1:16-22]))}];
-           rest_param = None; return = (Annot (Number [1:25-31]));
+           rest_param = None; this_param = None;
+           return = (Annot (Number [1:25-31]));
            predicate = None};
          statics = {}}
   |}]
@@ -358,25 +385,31 @@ let%expect_test "export_function_reference_check1" =
     export default foo;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [2:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [2:15-18]; index = 0})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [2:7-14];
+          def = (Ref LocalRef {ref_loc = [2:15-18]; index = 0})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. FunBinding {id_loc = [1:9-12];
          name = "foo"; async = false;
          generator = false; fn_loc = [1:0-23];
          def =
-         FunSig {tparams = Mono; params = [FunParam {name = (Some "x"); t = (Err [1:14])}];
-           rest_param = None; return = (Annot (Number [1:17-23]));
+         FunSig {tparams = Mono; params = [FunParam {name = (Some "x"); t = (Err [1:13-14])}];
+           rest_param = None; this_param = None;
+           return = (Annot (Number [1:17-23]));
            predicate = None};
          statics = {}}
 
     Errors:
-    ([1:14], MissingAnnotation)
+    ([1:13-14],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([1:13-14], Expected_annotation_sort.ArrayPattern))))
   |}]
 
 let%expect_test "export_function_reference_check2" =
@@ -385,12 +418,15 @@ let%expect_test "export_function_reference_check2" =
     export default foo;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [2:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [2:15-18]; index = 0})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [2:7-14];
+          def = (Ref LocalRef {ref_loc = [2:15-18]; index = 0})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. FunBinding {id_loc = [1:9-12];
@@ -399,12 +435,14 @@ let%expect_test "export_function_reference_check2" =
          def =
          FunSig {tparams = Mono;
            params = [FunParam {name = (Some "x"); t = (Annot (Number [1:16-22]))}];
-           rest_param = None; return = (Err [1:23]);
-           predicate = None};
+           rest_param = None; this_param = None;
+           return = (Err [1:23]); predicate = None};
          statics = {}}
 
     Errors:
-    ([1:23], MissingAnnotation)
+    ([1:23],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([1:23], Expected_annotation_sort.FunctionReturn))))
   |}]
 
 let%expect_test "function_param_optional" =
@@ -412,59 +450,106 @@ let%expect_test "function_param_optional" =
     export default function(p?: string): void {};
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       FunExpr {loc = [1:15-44]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono;
-           params =
-           [FunParam {name = (Some "p"); t = (Annot (Optional (Annot (String [1:28-34]))))}];
-           rest_param = None; return = (Annot (Void [1:37-41]));
-           predicate = None};
-         statics = {}}) |}]
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [1:7-14];
+          def =
+          (Value
+             FunExpr {loc = [1:15-44];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params =
+                 [FunParam {name = (Some "p"); t = (Annot (Optional (Annot (String [1:28-34]))))}];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Void [1:37-41]));
+                 predicate = None};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}} |}]
 
 let%expect_test "function_param_default" =
   print_sig {|
     export default function(p: string = "foo"): void {};
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [1:7-14];
+          def =
+          (Value
+             FunExpr {loc = [1:15-51];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params =
+                 [FunParam {name = (Some "p"); t = (Annot (Optional (Annot (String [1:27-33]))))}];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Void [1:44-48]));
+                 predicate = None};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}} |}]
 
-    Export_def:
-    (Value
-       FunExpr {loc = [1:15-51]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono;
-           params =
-           [FunParam {name = (Some "p"); t = (Annot (Optional (Annot (String [1:27-33]))))}];
-           rest_param = None; return = (Annot (Void [1:44-48]));
-           predicate = None};
-         statics = {}}) |}]
+let%expect_test "function_param_default_check" =
+  print_sig {|
+    export default function(p = "foo") {}
+  |};
+  [%expect {|
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [1:7-14];
+          def =
+          (Value
+             FunExpr {loc = [1:15-37];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params = [FunParam {name = (Some "p"); t = (Annot (Optional (Err [1:24-25])))}];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Void [1:34]));
+                 predicate = None};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
+
+    Errors:
+    ([1:24-25],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([1:24-25], Expected_annotation_sort.ArrayPattern))))
+
+  |}]
 
 let%expect_test "export_object_literal_property_literal" =
   print_sig {|
     export default { p: 0 };
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       ObjLit {loc = [1:15-23]; frozen = false;
-         proto = None;
-         props =
-         { "p" ->
-           (ObjValueField ([1:17-18], (Value (NumberLit ([1:20-21], 0., "0"))), Polarity.Neutral)) }})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [1:7-14];
+          def =
+          (Value
+             ObjLit {loc = [1:15-23];
+               frozen = false; proto = None;
+               props =
+               { "p" ->
+                 (ObjValueField ([1:17-18], (
+                    Value (NumberLit ([1:20-21], 0., "0"))), Polarity.Neutral)) }})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
   |}]
 
 let%expect_test "export_object_literal_property_reference" =
@@ -473,18 +558,22 @@ let%expect_test "export_object_literal_property_reference" =
     export default { p: x };
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [2:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       ObjLit {loc = [2:15-23]; frozen = false;
-         proto = None;
-         props =
-         { "p" ->
-           (ObjValueField ([2:17-18], (
-              Ref LocalRef {ref_loc = [2:20-21]; index = 0}), Polarity.Neutral)) }})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [2:7-14];
+          def =
+          (Value
+             ObjLit {loc = [2:15-23];
+               frozen = false; proto = None;
+               props =
+               { "p" ->
+                 (ObjValueField ([2:17-18], (
+                    Ref LocalRef {ref_loc = [2:20-21]; index = 0}), Polarity.Neutral)) }})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. Variable {id_loc = [1:4-5]; name = "x"; def = (Annot (Number [1:7-13]))}
@@ -496,24 +585,31 @@ let%expect_test "export_object_literal_property_reference_check" =
     export default { p: x };
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [2:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       ObjLit {loc = [2:15-23]; frozen = false;
-         proto = None;
-         props =
-         { "p" ->
-           (ObjValueField ([2:17-18], (
-              Ref LocalRef {ref_loc = [2:20-21]; index = 0}), Polarity.Neutral)) }})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [2:7-14];
+          def =
+          (Value
+             ObjLit {loc = [2:15-23];
+               frozen = false; proto = None;
+               props =
+               { "p" ->
+                 (ObjValueField ([2:17-18], (
+                    Ref LocalRef {ref_loc = [2:20-21]; index = 0}), Polarity.Neutral)) }})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
-    0. Variable {id_loc = [1:4-5]; name = "x"; def = (Err [1:5])}
+    0. Variable {id_loc = [1:4-5]; name = "x"; def = (Err [1:4-5])}
 
     Errors:
-    ([1:5], MissingAnnotation)
+    ([1:4-5],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([1:4-5],
+           Expected_annotation_sort.VariableDefinition {name = "x"}))))
   |}]
 
 let%expect_test "empty_object_literal" =
@@ -521,15 +617,15 @@ let%expect_test "empty_object_literal" =
     export default { };
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Err [1:15-18])
+    ESModule {type_exports = [||];
+      exports = [|ExportDefault {default_loc = [1:7-14]; def = (Err [1:15-18])}|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Errors:
-    ([1:15-18], EmptyObjectLiteral)
+    ([1:15-18], (SigError (Signature_error.EmptyObject [1:15-18])))
   |}]
 
 let%expect_test "export_class_reference" =
@@ -541,12 +637,15 @@ let%expect_test "export_class_reference" =
     export default C;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [5:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [5:15-16]; index = 0})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [5:7-14];
+          def = (Ref LocalRef {ref_loc = [5:15-16]; index = 0})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:6-7];
@@ -562,7 +661,8 @@ let%expect_test "export_class_reference" =
                def =
                FunSig {tparams = Mono;
                  params = [FunParam {name = (Some "x"); t = (Annot (Number [3:7-13]))}];
-                 rest_param = None; return = (Annot (Number [3:16-22]));
+                 rest_param = None; this_param = None;
+                 return = (Annot (Number [3:16-22]));
                  predicate = None}} };
            own_props =
            { "f" -> (ObjValueField ([2:2-3], (Annot (Number [2:5-11])), Polarity.Neutral)) }}}
@@ -577,12 +677,15 @@ let%expect_test "export_class_reference_check1" =
     export default C;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [5:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [5:15-16]; index = 0})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [5:7-14];
+          def = (Ref LocalRef {ref_loc = [5:15-16]; index = 0})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:6-7];
@@ -598,12 +701,16 @@ let%expect_test "export_class_reference_check1" =
                def =
                FunSig {tparams = Mono;
                  params = [FunParam {name = (Some "x"); t = (Annot (Number [3:7-13]))}];
-                 rest_param = None; return = (Annot (Number [3:16-22]));
+                 rest_param = None; this_param = None;
+                 return = (Annot (Number [3:16-22]));
                  predicate = None}} };
-           own_props = { "f" -> (ObjValueField ([2:2-3], (Err [2:3]), Polarity.Neutral)) }}}
+           own_props = { "f" -> (ObjValueField ([2:2-3], (Err [2:2-8]), Polarity.Neutral)) }}}
 
     Errors:
-    ([2:3], MissingAnnotation)
+    ([2:2-8],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([2:2-8],
+           Expected_annotation_sort.Property {name = "f"}))))
   |}]
 
 let%expect_test "export_class_reference_check2" =
@@ -615,12 +722,15 @@ let%expect_test "export_class_reference_check2" =
     export default C;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [5:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [5:15-16]; index = 0})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [5:7-14];
+          def = (Ref LocalRef {ref_loc = [5:15-16]; index = 0})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:6-7];
@@ -635,14 +745,17 @@ let%expect_test "export_class_reference_check2" =
                generator = false;
                def =
                FunSig {tparams = Mono;
-                 params = [FunParam {name = (Some "x"); t = (Err [3:5])}];
-                 rest_param = None; return = (Annot (Number [3:8-14]));
+                 params = [FunParam {name = (Some "x"); t = (Err [3:4-5])}];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Number [3:8-14]));
                  predicate = None}} };
            own_props =
            { "f" -> (ObjValueField ([2:2-3], (Annot (Number [2:5-11])), Polarity.Neutral)) }}}
 
     Errors:
-    ([3:5], MissingAnnotation)
+    ([3:4-5],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([3:4-5], Expected_annotation_sort.ArrayPattern))))
   |}]
 
 let%expect_test "export_class_reference_check3" =
@@ -654,12 +767,15 @@ let%expect_test "export_class_reference_check3" =
     export default C;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [5:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [5:15-16]; index = 0})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [5:7-14];
+          def = (Ref LocalRef {ref_loc = [5:15-16]; index = 0})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:6-7];
@@ -675,13 +791,16 @@ let%expect_test "export_class_reference_check3" =
                def =
                FunSig {tparams = Mono;
                  params = [FunParam {name = (Some "x"); t = (Annot (Number [3:7-13]))}];
-                 rest_param = None; return = (Err [3:14]);
+                 rest_param = None; this_param = None;
+                 return = (Err [3:14]);
                  predicate = None}} };
            own_props =
            { "f" -> (ObjValueField ([2:2-3], (Annot (Number [2:5-11])), Polarity.Neutral)) }}}
 
     Errors:
-    ([3:14], MissingAnnotation)
+    ([3:14],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([3:14], Expected_annotation_sort.FunctionReturn))))
   |}]
 
 let%expect_test "type_alias_dependencies" =
@@ -696,12 +815,15 @@ let%expect_test "type_alias_dependencies" =
     export default C;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [8:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [8:15-16]; index = 3})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [8:7-14];
+          def = (Ref LocalRef {ref_loc = [8:15-16]; index = 3})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. TypeAlias {id_loc = [1:5-7]; name = "T1"; tparams = Mono; body = (Annot (Number [1:10-16]))}
@@ -723,7 +845,7 @@ let%expect_test "type_alias_dependencies" =
                  [FunParam {name = (Some "x");
                     t = (TyRef (Unqualified LocalRef {ref_loc = [6:7-9]; index = 1}))}
                    ];
-                 rest_param = None;
+                 rest_param = None; this_param = None;
                  return = (TyRef (Unqualified LocalRef {ref_loc = [6:12-14]; index = 2}));
                  predicate = None}} };
            own_props =
@@ -742,12 +864,15 @@ let%expect_test "class_dependencies" =
     export default C;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [6:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [6:15-16]; index = 1})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [6:7-14];
+          def = (Ref LocalRef {ref_loc = [6:15-16]; index = 1})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:6-7];
@@ -774,7 +899,7 @@ let%expect_test "class_dependencies" =
                  [FunParam {name = (Some "x");
                     t = (TyRef (Unqualified LocalRef {ref_loc = [4:7-8]; index = 0}))}
                    ];
-                 rest_param = None;
+                 rest_param = None; this_param = None;
                  return = (TyRef (Unqualified LocalRef {ref_loc = [4:11-12]; index = 0}));
                  predicate = None}} };
            own_props =
@@ -793,12 +918,15 @@ let%expect_test "class_dependencies_check" =
     export default C;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [6:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [6:15-16]; index = 1})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [6:7-14];
+          def = (Ref LocalRef {ref_loc = [6:15-16]; index = 1})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:6-7];
@@ -807,7 +935,7 @@ let%expect_test "class_dependencies_check" =
          ClassSig {tparams = Mono; extends = ClassImplicitExtends;
            implements = []; static_props = {};
            proto_props = {};
-           own_props = { "f" -> (ObjValueField ([1:10-11], (Err [1:11]), Polarity.Neutral)) }}}
+           own_props = { "f" -> (ObjValueField ([1:10-11], (Err [1:10-16]), Polarity.Neutral)) }}}
     1. ClassBinding {id_loc = [2:6-7];
          name = "C";
          def =
@@ -824,7 +952,7 @@ let%expect_test "class_dependencies_check" =
                  [FunParam {name = (Some "x");
                     t = (TyRef (Unqualified LocalRef {ref_loc = [4:7-8]; index = 0}))}
                    ];
-                 rest_param = None;
+                 rest_param = None; this_param = None;
                  return = (TyRef (Unqualified LocalRef {ref_loc = [4:11-12]; index = 0}));
                  predicate = None}} };
            own_props =
@@ -833,7 +961,10 @@ let%expect_test "class_dependencies_check" =
                 (TyRef (Unqualified LocalRef {ref_loc = [3:5-6]; index = 0})), Polarity.Neutral)) }}}
 
     Errors:
-    ([1:11], MissingAnnotation)
+    ([1:10-16],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([1:10-16],
+           Expected_annotation_sort.Property {name = "f"}))))
   |}]
 
 let%expect_test "export_new_typecast" =
@@ -846,12 +977,15 @@ let%expect_test "export_new_typecast" =
     export default (new C: C);
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [6:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (TyRef (Unqualified LocalRef {ref_loc = [6:23-24]; index = 1}))
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [6:7-14];
+          def = (TyRef (Unqualified LocalRef {ref_loc = [6:23-24]; index = 1}))}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:6-7];
@@ -878,7 +1012,7 @@ let%expect_test "export_new_typecast" =
                  [FunParam {name = (Some "x");
                     t = (TyRef (Unqualified LocalRef {ref_loc = [4:7-8]; index = 0}))}
                    ];
-                 rest_param = None;
+                 rest_param = None; this_param = None;
                  return = (TyRef (Unqualified LocalRef {ref_loc = [4:11-12]; index = 0}));
                  predicate = None}} };
            own_props =
@@ -897,12 +1031,15 @@ let%expect_test "export_new_typecast_check" =
     export default (new C: C);
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [6:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (TyRef (Unqualified LocalRef {ref_loc = [6:23-24]; index = 1}))
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [6:7-14];
+          def = (TyRef (Unqualified LocalRef {ref_loc = [6:23-24]; index = 1}))}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:6-7];
@@ -911,7 +1048,7 @@ let%expect_test "export_new_typecast_check" =
          ClassSig {tparams = Mono; extends = ClassImplicitExtends;
            implements = []; static_props = {};
            proto_props = {};
-           own_props = { "f" -> (ObjValueField ([1:10-11], (Err [1:11]), Polarity.Neutral)) }}}
+           own_props = { "f" -> (ObjValueField ([1:10-11], (Err [1:10-16]), Polarity.Neutral)) }}}
     1. ClassBinding {id_loc = [2:6-7];
          name = "C";
          def =
@@ -928,7 +1065,7 @@ let%expect_test "export_new_typecast_check" =
                  [FunParam {name = (Some "x");
                     t = (TyRef (Unqualified LocalRef {ref_loc = [4:7-8]; index = 0}))}
                    ];
-                 rest_param = None;
+                 rest_param = None; this_param = None;
                  return = (TyRef (Unqualified LocalRef {ref_loc = [4:11-12]; index = 0}));
                  predicate = None}} };
            own_props =
@@ -937,7 +1074,10 @@ let%expect_test "export_new_typecast_check" =
                 (TyRef (Unqualified LocalRef {ref_loc = [3:5-6]; index = 0})), Polarity.Neutral)) }}}
 
     Errors:
-    ([1:11], MissingAnnotation)
+    ([1:10-16],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([1:10-16],
+           Expected_annotation_sort.Property {name = "f"}))))
   |}]
 
 let%expect_test "recursive_dependencies" =
@@ -949,12 +1089,15 @@ let%expect_test "recursive_dependencies" =
     export default C;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [5:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [5:15-16]; index = 0})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [5:7-14];
+          def = (Ref LocalRef {ref_loc = [5:15-16]; index = 0})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:6-7];
@@ -973,7 +1116,7 @@ let%expect_test "recursive_dependencies" =
                  [FunParam {name = (Some "x");
                     t = (TyRef (Unqualified LocalRef {ref_loc = [3:7-8]; index = 0}))}
                    ];
-                 rest_param = None;
+                 rest_param = None; this_param = None;
                  return = (TyRef (Unqualified LocalRef {ref_loc = [3:11-12]; index = 0}));
                  predicate = None}} };
            own_props =
@@ -991,12 +1134,15 @@ let%expect_test "recursive_dependencies_check" =
     export default C;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [5:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [5:15-16]; index = 0})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [5:7-14];
+          def = (Ref LocalRef {ref_loc = [5:15-16]; index = 0})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:6-7];
@@ -1015,13 +1161,16 @@ let%expect_test "recursive_dependencies_check" =
                  [FunParam {name = (Some "x");
                     t = (TyRef (Unqualified LocalRef {ref_loc = [3:7-8]; index = 0}))}
                    ];
-                 rest_param = None;
+                 rest_param = None; this_param = None;
                  return = (TyRef (Unqualified LocalRef {ref_loc = [3:11-12]; index = 0}));
                  predicate = None}} };
-           own_props = { "f" -> (ObjValueField ([2:2-3], (Err [2:3]), Polarity.Neutral)) }}}
+           own_props = { "f" -> (ObjValueField ([2:2-3], (Err [2:2-12]), Polarity.Neutral)) }}}
 
     Errors:
-    ([2:3], MissingAnnotation)
+    ([2:2-12],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([2:2-12],
+           Expected_annotation_sort.Property {name = "f"}))))
   |}]
 
 let%expect_test "typeof_dependencies" =
@@ -1033,12 +1182,15 @@ let%expect_test "typeof_dependencies" =
     export default (new C: C);
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [5:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (TyRef (Unqualified LocalRef {ref_loc = [5:23-24]; index = 1}))
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [5:7-14];
+          def = (TyRef (Unqualified LocalRef {ref_loc = [5:23-24]; index = 1}))}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. Variable {id_loc = [1:4-5]; name = "x"; def = (Annot (Number [1:7-13]))}
@@ -1066,15 +1218,18 @@ let%expect_test "typeof_dependencies_check" =
     export default (new C: C);
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [5:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (TyRef (Unqualified LocalRef {ref_loc = [5:23-24]; index = 1}))
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [5:7-14];
+          def = (TyRef (Unqualified LocalRef {ref_loc = [5:23-24]; index = 1}))}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
-    0. Variable {id_loc = [1:4-5]; name = "x"; def = (Err [1:5])}
+    0. Variable {id_loc = [1:4-5]; name = "x"; def = (Err [1:4-5])}
     1. ClassBinding {id_loc = [2:6-7];
          name = "C";
          def =
@@ -1090,7 +1245,10 @@ let%expect_test "typeof_dependencies_check" =
                 Polarity.Neutral)) }}}
 
     Errors:
-    ([1:5], MissingAnnotation)
+    ([1:4-5],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([1:4-5],
+           Expected_annotation_sort.VariableDefinition {name = "x"}))))
   |}]
 
 let%expect_test "const_initializer" =
@@ -1099,18 +1257,22 @@ let%expect_test "const_initializer" =
     export default { x };
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [2:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       ObjLit {loc = [2:15-20]; frozen = false;
-         proto = None;
-         props =
-         { "x" ->
-           (ObjValueField ([2:17-18], (
-              Ref LocalRef {ref_loc = [2:17-18]; index = 0}), Polarity.Neutral)) }})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [2:7-14];
+          def =
+          (Value
+             ObjLit {loc = [2:15-20];
+               frozen = false; proto = None;
+               props =
+               { "x" ->
+                 (ObjValueField ([2:17-18], (
+                    Ref LocalRef {ref_loc = [2:17-18]; index = 0}), Polarity.Neutral)) }})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. Variable {id_loc = [1:6-7]; name = "x"; def = (Value (NumberLit ([1:10-11], 0., "0")))}
@@ -1121,15 +1283,15 @@ let%expect_test "empty_array_literal" =
     export default [ ];
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Err [1:15-18])
+    ESModule {type_exports = [||];
+      exports = [|ExportDefault {default_loc = [1:7-14]; def = (Err [1:15-18])}|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Errors:
-    ([1:15-18], EmptyArrayLiteral)
+    ([1:15-18], (SigError (Signature_error.EmptyArray [1:15-18])))
   |}]
 
 let%expect_test "non_empty_array_literal" =
@@ -1139,21 +1301,28 @@ let%expect_test "non_empty_array_literal" =
     export default [ x, y ];
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [3:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       (ArrayLit ([3:15-23], (Ref LocalRef {ref_loc = [3:17-18]; index = 0}),
-          [(Ref LocalRef {ref_loc = [3:20-21]; index = 1})])))
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [3:7-14];
+          def =
+          (Value
+             (ArrayLit ([3:15-23], (Ref LocalRef {ref_loc = [3:17-18]; index = 0}),
+                [(Ref LocalRef {ref_loc = [3:20-21]; index = 1})])))}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. Variable {id_loc = [1:6-7]; name = "x"; def = (Value (NumberLit ([1:10-11], 0., "0")))}
-    1. Variable {id_loc = [2:4-5]; name = "y"; def = (Err [2:5])}
+    1. Variable {id_loc = [2:4-5]; name = "y"; def = (Err [2:4-5])}
 
     Errors:
-    ([2:5], MissingAnnotation)
+    ([2:4-5],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([2:4-5],
+           Expected_annotation_sort.VariableDefinition {name = "y"}))))
   |}]
 
 let%expect_test "void_function" =
@@ -1162,12 +1331,15 @@ let%expect_test "void_function" =
     export default foo;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [2:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [2:15-18]; index = 0})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [2:7-14];
+          def = (Ref LocalRef {ref_loc = [2:15-18]; index = 0})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. FunBinding {id_loc = [1:9-12];
@@ -1175,7 +1347,8 @@ let%expect_test "void_function" =
          generator = false; fn_loc = [1:0-14];
          def =
          FunSig {tparams = Mono; params = [];
-           rest_param = None; return = (Annot (Void [1:14]));
+           rest_param = None; this_param = None;
+           return = (Annot (Void [1:14]));
            predicate = None};
          statics = {}}
   |}]
@@ -1186,12 +1359,15 @@ let%expect_test "void_generator" =
     export default foo;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [2:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [2:15-18]; index = 0})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [2:7-14];
+          def = (Ref LocalRef {ref_loc = [2:15-18]; index = 0})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. FunBinding {id_loc = [1:10-13];
@@ -1199,12 +1375,14 @@ let%expect_test "void_generator" =
          generator = true; fn_loc = [1:0-15];
          def =
          FunSig {tparams = Mono; params = [];
-           rest_param = None; return = (Err [1:15]);
-           predicate = None};
+           rest_param = None; this_param = None;
+           return = (Err [1:15]); predicate = None};
          statics = {}}
 
     Errors:
-    ([1:15], MissingAnnotation)
+    ([1:15],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([1:15], Expected_annotation_sort.FunctionReturn))))
   |}]
 
 let%expect_test "import_default_dependencies" =
@@ -1216,15 +1394,18 @@ let%expect_test "import_default_dependencies" =
     export default (new C: C);
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [5:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [5:7-14];
+          def = (TyRef (Unqualified LocalRef {ref_loc = [5:23-24]; index = 0}))}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Module refs:
     0. ./import_default_dependencies_helper
-
-    Export_def:
-    (TyRef (Unqualified LocalRef {ref_loc = [5:23-24]; index = 0}))
 
     Local defs:
     0. ClassBinding {id_loc = [2:6-7];
@@ -1255,15 +1436,18 @@ let%expect_test "import_type_dependencies" =
     export default C;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [6:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [6:7-14];
+          def = (Ref LocalRef {ref_loc = [6:15-16]; index = 0})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Module refs:
     0. ./import_type_dependencies_helper
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [6:15-16]; index = 0})
 
     Local defs:
     0. ClassBinding {id_loc = [2:6-7];
@@ -1282,7 +1466,7 @@ let%expect_test "import_type_dependencies" =
                  [FunParam {name = (Some "x");
                     t = (TyRef (Unqualified RemoteRef {ref_loc = [4:7-9]; index = 1}))}
                    ];
-                 rest_param = None;
+                 rest_param = None; this_param = None;
                  return = (TyRef (Unqualified RemoteRef {ref_loc = [4:12-14]; index = 2}));
                  predicate = None}} };
            own_props =
@@ -1306,15 +1490,18 @@ let%expect_test "qualified_references" =
     export default C;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [6:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [6:7-14];
+          def = (Ref LocalRef {ref_loc = [6:15-16]; index = 0})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Module refs:
     0. ./qualified_references_helper
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [6:15-16]; index = 0})
 
     Local defs:
     0. ClassBinding {id_loc = [3:6-7];
@@ -1338,7 +1525,7 @@ let%expect_test "qualified_references" =
                          name = "T";
                          qualification = (Unqualified RemoteRef {ref_loc = [4:7-9]; index = 0})})}
                    ];
-                 rest_param = None;
+                 rest_param = None; this_param = None;
                  return =
                  (TyRef
                     Qualified {loc = [4:14-18];
@@ -1368,13 +1555,12 @@ let%expect_test "hoisted_requires" =
     module.exports = C;
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
+    CJSModule {type_exports = [||];
+      exports = (Some (Ref LocalRef {ref_loc = [11:17-18]; index = 2}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Module refs:
     0. ./hoisted_requires_helper
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [11:17-18]; index = 2})
 
     Local defs:
     0. Variable {id_loc = [1:6-7]; name = "M"; def = Require {loc = [1:10-46]; index = 0}}
@@ -1401,7 +1587,8 @@ let%expect_test "hoisted_requires" =
     1. PropP {id_loc = [3:8-9]; name = "D"; def = 0}
 
     Errors:
-    ([3:11], MissingAnnotation)
+    ([3:11],
+     (SigError (Signature_error.ExpectedAnnotation ([3:11], Expected_annotation_sort.ArrayPattern))))
   |}]
 
 let%expect_test "hoisted_locals" =
@@ -1418,17 +1605,16 @@ let%expect_test "hoisted_locals" =
     module.exports = C;
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
+    CJSModule {type_exports = [||];
+      exports = (Some (Ref LocalRef {ref_loc = [10:17-18]; index = 2}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Module refs:
     0. ./hoisted_locals_helper
 
-    Export_def:
-    (Ref LocalRef {ref_loc = [10:17-18]; index = 2})
-
     Local defs:
     0. Variable {id_loc = [1:6-7]; name = "M"; def = Require {loc = [1:10-44]; index = 0}}
-    1. Variable {id_loc = [3:6-7]; name = "D"; def = (Err [3:7])}
+    1. Variable {id_loc = [3:6-7]; name = "D"; def = (Err [3:6-7])}
     2. ClassBinding {id_loc = [7:6-7];
          name = "C";
          def =
@@ -1444,7 +1630,10 @@ let%expect_test "hoisted_locals" =
                 (TyRef (Unqualified LocalRef {ref_loc = [8:5-6]; index = 1})), Polarity.Neutral)) }}}
 
     Errors:
-    ([3:7], MissingAnnotation)
+    ([3:6-7],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([3:6-7],
+           Expected_annotation_sort.VariableDefinition {name = "D"}))))
   |}]
 
 let%expect_test "dynamic_requires" =
@@ -1452,14 +1641,23 @@ let%expect_test "dynamic_requires" =
     module.exports = require('./dynamic_requires_helper');
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
+    CJSModule {type_exports = [||]; exports = (Some Require {loc = [1:17-53]; index = 0});
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Module refs:
     0. ./dynamic_requires_helper
-
-    Export_def:
-    Require {loc = [1:17-53]; index = 0}
   |}]
+
+let%expect_test "import_dynamic" =
+  print_sig {|
+    module.exports = import('foo');
+  |};
+  [%expect {|
+    CJSModule {type_exports = [||]; exports = (Some ImportDynamic {loc = [1:17-30]; index = 0});
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
+
+    Module refs:
+    0. foo |}]
 
 let%expect_test "scope_extrusion" =
   print_sig {|
@@ -1473,10 +1671,9 @@ let%expect_test "scope_extrusion" =
     module.exports = x;
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [8:17-18]; index = 1})
+    CJSModule {type_exports = [||];
+      exports = (Some (Ref LocalRef {ref_loc = [8:17-18]; index = 1}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [2:8-9];
@@ -1504,19 +1701,19 @@ let%expect_test "scope_extrusion_nested" =
     module.exports = { x, y };
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Value
-       ObjLit {loc = [11:17-25]; frozen = false;
-         proto = None;
-         props =
-         { "x" ->
-           (ObjValueField ([11:19-20], (
-              Ref LocalRef {ref_loc = [11:19-20]; index = 1}), Polarity.Neutral));
-           "y" ->
-           (ObjValueField ([11:22-23], (
-              Ref BuiltinRef {ref_loc = [11:22-23]; name = "y"}), Polarity.Neutral)) }})
+    CJSModule {type_exports = [||];
+      exports =
+      (Some (Value
+               ObjLit {loc = [11:17-25];
+                 frozen = false; proto = None;
+                 props =
+                 { "x" ->
+                   (ObjValueField ([11:19-20], (
+                      Ref LocalRef {ref_loc = [11:19-20]; index = 1}), Polarity.Neutral));
+                   "y" ->
+                   (ObjValueField ([11:22-23], (
+                      Ref BuiltinRef {ref_loc = [11:22-23]; name = "y"}), Polarity.Neutral)) }}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [2:8-9];
@@ -1540,29 +1737,31 @@ let%expect_test "report_all_errors" =
     };
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Value
-       ObjLit {loc = [4:17-7:1]; frozen = false;
-         proto = None;
-         props =
-         { "a" ->
-           (ObjValueField ([5:2-3], (
-              Ref LocalRef {ref_loc = [5:5-6]; index = 0}), Polarity.Neutral));
-           "b" ->
-           (ObjValueField ([6:2-3],
-              (Value
-                 FunExpr {loc = [6:5-21];
-                   async = false; generator = false;
-                   def =
-                   FunSig {tparams = Mono;
-                     params = [FunParam {name = (Some "x"); t = (Annot (String [6:9-15]))}];
-                     rest_param = None;
-                     return = (Err [6:16]);
-                     predicate = None};
-                   statics = {}}),
-              Polarity.Neutral)) }})
+    CJSModule {type_exports = [||];
+      exports =
+      (Some (Value
+               ObjLit {loc = [4:17-7:1];
+                 frozen = false; proto = None;
+                 props =
+                 { "a" ->
+                   (ObjValueField ([5:2-3], (
+                      Ref LocalRef {ref_loc = [5:5-6]; index = 0}), Polarity.Neutral));
+                   "b" ->
+                   (ObjValueField ([6:2-3],
+                      (Value
+                         FunExpr {loc = [6:5-21];
+                           async = false;
+                           generator = false;
+                           def =
+                           FunSig {tparams = Mono;
+                             params = [FunParam {name = (Some "x"); t = (Annot (String [6:9-15]))}];
+                             rest_param = None;
+                             this_param = None;
+                             return = (Err [6:16]);
+                             predicate = None};
+                           statics = {}}),
+                      Polarity.Neutral)) }}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:6-7];
@@ -1571,11 +1770,16 @@ let%expect_test "report_all_errors" =
          ClassSig {tparams = Mono; extends = ClassImplicitExtends;
            implements = []; static_props = {};
            proto_props = {};
-           own_props = { "f" -> (ObjValueField ([2:2-3], (Err [2:3]), Polarity.Neutral)) }}}
+           own_props = { "f" -> (ObjValueField ([2:2-3], (Err [2:2-23]), Polarity.Neutral)) }}}
 
     Errors:
-    ([6:16], MissingAnnotation)
-    ([2:3], MissingAnnotation)
+    ([6:16],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([6:16], Expected_annotation_sort.FunctionReturn))))
+    ([2:2-23],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([2:2-23],
+           Expected_annotation_sort.Property {name = "f"}))))
   |}]
 
 let%expect_test "munged_methods_ignored_if_directive" =
@@ -1586,12 +1790,15 @@ let%expect_test "munged_methods_ignored_if_directive" =
     export default C;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [4:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [4:15-16]; index = 0})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [4:7-14];
+          def = (Ref LocalRef {ref_loc = [4:15-16]; index = 0})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:6-7];
@@ -1610,12 +1817,15 @@ let%expect_test "munged_methods_not_ignored" =
     export default C;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [4:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [4:15-16]; index = 0})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [4:7-14];
+          def = (Ref LocalRef {ref_loc = [4:15-16]; index = 0})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:6-7];
@@ -1631,12 +1841,14 @@ let%expect_test "munged_methods_not_ignored" =
                def =
                FunSig {tparams = Mono;
                  params = []; rest_param = None;
-                 return = (Err [2:11]);
+                 this_param = None; return = (Err [2:11]);
                  predicate = None}} };
            own_props = {}}}
 
     Errors:
-    ([2:11], MissingAnnotation)
+    ([2:11],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([2:11], Expected_annotation_sort.FunctionReturn))))
   |}]
 
 let%expect_test "munged_fields_ignored_if_directive" =
@@ -1647,12 +1859,15 @@ let%expect_test "munged_fields_ignored_if_directive" =
     export default C;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [4:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [4:15-16]; index = 0})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [4:7-14];
+          def = (Ref LocalRef {ref_loc = [4:15-16]; index = 0})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:6-7];
@@ -1671,12 +1886,15 @@ let%expect_test "munged_fields_not_ignored" =
     export default C;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [4:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [4:15-16]; index = 0})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [4:7-14];
+          def = (Ref LocalRef {ref_loc = [4:15-16]; index = 0})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:6-7];
@@ -1685,10 +1903,13 @@ let%expect_test "munged_fields_not_ignored" =
          ClassSig {tparams = Mono; extends = ClassImplicitExtends;
            implements = []; static_props = {};
            proto_props = {};
-           own_props = { "_method" -> (ObjValueField ([2:2-9], (Err [2:9]), Polarity.Neutral)) }}}
+           own_props = { "_method" -> (ObjValueField ([2:2-9], (Err [2:2-31]), Polarity.Neutral)) }}}
 
     Errors:
-    ([2:9], MissingAnnotation)
+    ([2:2-31],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([2:2-31],
+           Expected_annotation_sort.Property {name = "_method"}))))
   |}]
 
 let%expect_test "propTypes_static_ignored" =
@@ -1699,12 +1920,15 @@ let%expect_test "propTypes_static_ignored" =
     export default C;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [4:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [4:15-16]; index = 0})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [4:7-14];
+          def = (Ref LocalRef {ref_loc = [4:15-16]; index = 0})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:6-7];
@@ -1725,12 +1949,15 @@ let%expect_test "propTypes_static_failure" =
     export default C;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [4:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [4:15-16]; index = 0})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [4:7-14];
+          def = (Ref LocalRef {ref_loc = [4:15-16]; index = 0})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:6-7];
@@ -1739,11 +1966,14 @@ let%expect_test "propTypes_static_failure" =
          ClassSig {tparams = Mono; extends = ClassImplicitExtends;
            implements = [];
            static_props =
-           { "propTypes" -> (ObjValueField ([2:9-18], (Err [2:18]), Polarity.Neutral)) };
+           { "propTypes" -> (ObjValueField ([2:9-18], (Err [2:2-23]), Polarity.Neutral)) };
            proto_props = {}; own_props = {}}}
 
     Errors:
-    ([2:18], MissingAnnotation)
+    ([2:2-23],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([2:2-23],
+           Expected_annotation_sort.Property {name = "propTypes"}))))
   |}]
 
 let%expect_test "array_spread" =
@@ -1751,13 +1981,11 @@ let%expect_test "array_spread" =
     module.exports = [1, ...[2, 3], 4];
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Err [1:21-30])
+    CJSModule {type_exports = [||]; exports = (Some (Err [1:17-34]));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Errors:
-    ([1:21-30], UnsupportedArraySpread)
+    ([1:17-34], (SigError (Signature_error.UnexpectedArraySpread ([1:17-34], [1:21-30]))))
   |}]
 
 let%expect_test "array_hole" =
@@ -1765,13 +1993,11 @@ let%expect_test "array_hole" =
     module.exports = [,];
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Err [1:17-20])
+    CJSModule {type_exports = [||]; exports = (Some (Err [1:17-20]));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Errors:
-    ([1:17-20], UnsupportedArrayHole)
+    ([1:17-20], (SigError (Signature_error.UnexpectedArrayHole [1:17-20])))
   |}]
 
 let%expect_test "object_spread" =
@@ -1779,29 +2005,31 @@ let%expect_test "object_spread" =
     module.exports = { x: 'x', ...{ y: 'y' }, z: 'z' };
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Value
-       ObjSpreadLit {loc = [1:17-50];
-         frozen = false; proto = None;
-         elems_rev =
-         ((ObjValueSpreadSlice
-             { "z" ->
-               (ObjValueField ([1:42-43], (Value (StringLit ([1:45-48], "z"))), Polarity.Neutral)) }),
-          [(ObjValueSpreadElem
-              (Value
-                 ObjLit {loc = [1:30-40];
-                   frozen = false; proto = None;
-                   props =
-                   { "y" ->
-                     (ObjValueField ([1:32-33], (
-                        Value (StringLit ([1:35-38], "y"))), Polarity.Neutral)) }}));
-            (ObjValueSpreadSlice
-               { "x" ->
-                 (ObjValueField ([1:19-20], (
-                    Value (StringLit ([1:22-25], "x"))), Polarity.Neutral)) })
-            ])})
+    CJSModule {type_exports = [||];
+      exports =
+      (Some (Value
+               ObjSpreadLit {loc = [1:17-50];
+                 frozen = false; proto = None;
+                 elems_rev =
+                 ((ObjValueSpreadSlice
+                     { "z" ->
+                       (ObjValueField ([1:42-43], (
+                          Value (StringLit ([1:45-48], "z"))), Polarity.Neutral)) }),
+                  [(ObjValueSpreadElem
+                      (Value
+                         ObjLit {loc = [1:30-40];
+                           frozen = false;
+                           proto = None;
+                           props =
+                           { "y" ->
+                             (ObjValueField ([1:32-33], (
+                                Value (StringLit ([1:35-38], "y"))), Polarity.Neutral)) }}));
+                    (ObjValueSpreadSlice
+                       { "x" ->
+                         (ObjValueField ([1:19-20], (
+                            Value (StringLit ([1:22-25], "x"))), Polarity.Neutral)) })
+                    ])}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
   |}]
 
 let%expect_test "reference_expression1" =
@@ -1809,10 +2037,11 @@ let%expect_test "reference_expression1" =
     module.exports = Number.NaN;
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Eval ([1:17-27], (Ref BuiltinRef {ref_loc = [1:17-23]; name = "Number"}), (GetProp "NaN")))
+    CJSModule {type_exports = [||];
+      exports =
+      (Some (Eval ([1:17-27], (Ref BuiltinRef {ref_loc = [1:17-23]; name = "Number"}),
+               (GetProp "NaN"))));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
   |}]
 
 let%expect_test "reference_expression2" =
@@ -1820,24 +2049,33 @@ let%expect_test "reference_expression2" =
     module.exports = 'x'.length;
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Err [1:17-20])
+    CJSModule {type_exports = [||]; exports = (Some (Err [1:17-27]));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Errors:
-    ([1:17-20], TODO_Expression)
+    ([1:17-27],
+     (SigError
+        (Signature_error.UnexpectedExpression ([1:17-27], Flow_ast_utils.ExpressionSort.Member))))
   |}]
+
+let%expect_test "member_expression" =
+  print_sig {|
+    module.exports = a[0];
+  |};
+  [%expect {|
+    CJSModule {type_exports = [||];
+      exports =
+      (Some (Eval ([1:17-21], (Ref BuiltinRef {ref_loc = [1:17-18]; name = "a"}),
+               (GetElem (Value (NumberLit ([1:19-20], 0., "0")))))));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}} |}]
 
 let%expect_test "arith_expression1" =
   print_sig {|
     module.exports = 6*7;
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Value (NumberVal [1:17-20]))
+    CJSModule {type_exports = [||]; exports = (Some (Value (NumberVal [1:17-20])));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
   |}]
 
 let%expect_test "arith_expression2" =
@@ -1845,13 +2083,13 @@ let%expect_test "arith_expression2" =
     module.exports = 6+7;
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Err [1:17-20])
+    CJSModule {type_exports = [||]; exports = (Some (Err [1:17-20]));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Errors:
-    ([1:17-20], MissingAnnotation)
+    ([1:17-20],
+     (SigError
+        (Signature_error.UnexpectedExpression ([1:17-20], Flow_ast_utils.ExpressionSort.Binary))))
   |}]
 
 let%expect_test "update_expression" =
@@ -1863,14 +2101,12 @@ let%expect_test "update_expression" =
     export const post_decr = foo--;
   |};
   [%expect {|
-    ESExports {
-      names =
-      { "post_decr" -> (ExportBinding 3);
-        "post_incr" -> (ExportBinding 2);
-        "pre_decr" -> (ExportBinding 1);
-        "pre_incr" -> (ExportBinding 0) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||];
+      exports = [|(ExportBinding 3); (ExportBinding 2); (ExportBinding 1); (ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"post_decr"; "post_incr"; "pre_decr"; "pre_incr"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. Variable {id_loc = [2:13-21]; name = "pre_incr"; def = (Value (NumberVal [2:24-29]))}
@@ -1884,22 +2120,21 @@ let%expect_test "sequence_expression" =
     export default (x, null);
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [2:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value (NullLit [2:19-23])) |}]
+    ESModule {type_exports = [||];
+      exports = [|ExportDefault {default_loc = [2:7-14]; def = (Value (NullLit [2:19-23]))}|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}} |}]
 
 let%expect_test "named_class_expression" =
   print_sig {|
     module.exports = class C { };
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [1:23-24]; index = 0})
+    CJSModule {type_exports = [||];
+      exports = (Some (Ref LocalRef {ref_loc = [1:23-24]; index = 0}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:23-24];
@@ -1915,10 +2150,9 @@ let%expect_test "named_function_expression" =
     module.exports = function foo() { };
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [1:26-29]; index = 0})
+    CJSModule {type_exports = [||];
+      exports = (Some (Ref LocalRef {ref_loc = [1:26-29]; index = 0}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Local defs:
     0. FunBinding {id_loc = [1:26-29];
@@ -1926,7 +2160,8 @@ let%expect_test "named_function_expression" =
          generator = false; fn_loc = [1:17-31];
          def =
          FunSig {tparams = Mono; params = [];
-           rest_param = None; return = (Annot (Void [1:31]));
+           rest_param = None; this_param = None;
+           return = (Annot (Void [1:31]));
            predicate = None};
          statics = {}}
   |}]
@@ -1939,9 +2174,11 @@ let%expect_test "interface_coverage" =
     }
   |};
   [%expect {|
-    ESExports {names = { "C" -> (ExportBinding 1) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 1)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"C"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. Interface {id_loc = [1:18-21];
@@ -1977,7 +2214,9 @@ let%expect_test "bound_coverage" =
     export type T = <X: Foo> (X) => void;
   |};
   [%expect {|
-    CJSExports {types = { "T" -> (ExportTypeBinding 1) }; type_stars = []; strict = true}
+    CJSModule {type_exports = [|(ExportTypeBinding 1)|];
+      exports = None;
+      info = CJSModuleInfo {type_export_keys = [|"T"|]; type_stars = []; strict = true}}
 
     Local defs:
     0. TypeAlias {id_loc = [1:5-8]; name = "Foo"; tparams = Mono; body = (Annot (Number [1:11-17]))}
@@ -1997,7 +2236,8 @@ let%expect_test "bound_coverage" =
                     []));
                  params =
                  [FunParam {name = None; t = (Annot Bound {ref_loc = [2:26-27]; name = "X"})}];
-                 rest_param = None; return = (Annot (Void [2:32-36]));
+                 rest_param = None; this_param = None;
+                 return = (Annot (Void [2:32-36]));
                  predicate = None}
                )))}
   |}]
@@ -2007,10 +2247,9 @@ let%expect_test "recursive_class_coverage" =
     module.exports = class C { x: C; };
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [1:23-24]; index = 0})
+    CJSModule {type_exports = [||];
+      exports = (Some (Ref LocalRef {ref_loc = [1:23-24]; index = 0}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:23-24];
@@ -2031,10 +2270,9 @@ let%expect_test "shadowed_class_expression" =
     module.exports = class C { }
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [2:23-24]; index = 0})
+    CJSModule {type_exports = [||];
+      exports = (Some (Ref LocalRef {ref_loc = [2:23-24]; index = 0}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [2:23-24];
@@ -2050,18 +2288,19 @@ let%expect_test "frozen_object" =
     module.exports = Object.freeze({ foo: 42, bar: 'hello' });
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Value
-       ObjLit {loc = [1:31-56]; frozen = true;
-         proto = None;
-         props =
-         { "bar" ->
-           (ObjValueField ([1:42-45], (Value (StringLit ([1:47-54], "hello"))), Polarity.Neutral));
-           "foo" ->
-           (ObjValueField ([1:33-36], (
-              Value (NumberLit ([1:38-40], 42., "42"))), Polarity.Neutral)) }})
+    CJSModule {type_exports = [||];
+      exports =
+      (Some (Value
+               ObjLit {loc = [1:31-56];
+                 frozen = true; proto = None;
+                 props =
+                 { "bar" ->
+                   (ObjValueField ([1:42-45], (
+                      Value (StringLit ([1:47-54], "hello"))), Polarity.Neutral));
+                   "foo" ->
+                   (ObjValueField ([1:33-36], (
+                      Value (NumberLit ([1:38-40], 42., "42"))), Polarity.Neutral)) }}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
   |}]
 
 let%expect_test "frozen_object_empty" =
@@ -2069,20 +2308,18 @@ let%expect_test "frozen_object_empty" =
     module.exports = Object.freeze({});
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Value ObjLit {loc = [1:31-33]; frozen = true; proto = None; props = {}}) |}]
+    CJSModule {type_exports = [||];
+      exports = (Some (Value ObjLit {loc = [1:31-33]; frozen = true; proto = None; props = {}}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}} |}]
 
 let%expect_test "fbt_empty_open_close" =
   print_sig ~facebook_fbt:"FbtElement" {|
     module.exports = <fbt></fbt>;
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (TyRef (Unqualified BuiltinRef {ref_loc = [1:18-21]; name = "FbtElement"}))
+    CJSModule {type_exports = [||];
+      exports = (Some (TyRef (Unqualified BuiltinRef {ref_loc = [1:18-21]; name = "FbtElement"})));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
   |}]
 
 let%expect_test "fbt_empty_open" =
@@ -2090,10 +2327,9 @@ let%expect_test "fbt_empty_open" =
     module.exports = <fbt/>;
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (TyRef (Unqualified BuiltinRef {ref_loc = [1:18-21]; name = "FbtElement"}))
+    CJSModule {type_exports = [||];
+      exports = (Some (TyRef (Unqualified BuiltinRef {ref_loc = [1:18-21]; name = "FbtElement"})));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
   |}]
 
 let%expect_test "fbt_with_child" =
@@ -2102,10 +2338,9 @@ let%expect_test "fbt_with_child" =
     module.exports = <fbt desc={foo()}></fbt>;
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (TyRef (Unqualified BuiltinRef {ref_loc = [2:18-21]; name = "FbtElement"}))
+    CJSModule {type_exports = [||];
+      exports = (Some (TyRef (Unqualified BuiltinRef {ref_loc = [2:18-21]; name = "FbtElement"})));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
   |}]
 
 let%expect_test "keymirror" =
@@ -2116,17 +2351,19 @@ let%expect_test "keymirror" =
     })
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Value
-       ObjLit {loc = [1:17-4:2]; frozen = false;
-         proto = None;
-         props =
-         { "a" ->
-           (ObjValueField ([2:2-3], (Annot (SingletonString ([2:2-3], "a"))), Polarity.Neutral));
-           "b" ->
-           (ObjValueField ([3:2-3], (Annot (SingletonString ([3:2-3], "b"))), Polarity.Neutral)) }})
+    CJSModule {type_exports = [||];
+      exports =
+      (Some (Value
+               ObjLit {loc = [1:27-4:1];
+                 frozen = false; proto = None;
+                 props =
+                 { "a" ->
+                   (ObjValueField ([2:2-3], (
+                      Annot (SingletonString ([2:2-3], "a"))), Polarity.Neutral));
+                   "b" ->
+                   (ObjValueField ([3:2-3], (
+                      Annot (SingletonString ([3:2-3], "b"))), Polarity.Neutral)) }}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
   |}]
 
 let%expect_test "jsx_div" =
@@ -2134,13 +2371,14 @@ let%expect_test "jsx_div" =
     module.exports = <div></div>;
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Err [1:17-28])
+    CJSModule {type_exports = [||]; exports = (Some (Err [1:17-28]));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Errors:
-    ([1:17-28], UnsupportedJSXElement)
+    ([1:17-28],
+     (SigError
+        (Signature_error.UnexpectedExpression ([1:17-28], Flow_ast_utils.ExpressionSort.JSXElement
+           ))))
   |}]
 
 let%expect_test "function_return" =
@@ -2149,12 +2387,14 @@ let%expect_test "function_return" =
     export function foo<X: typeof n>(x: X) { return 1; };
   |};
   [%expect {|
-    ESExports {names = { "foo" -> (ExportBinding 1) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 1)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"foo"|];
+        stars = []; strict = true}}
 
     Local defs:
-    0. Variable {id_loc = [1:4-5]; name = "n"; def = (Err [1:5])}
+    0. Variable {id_loc = [1:4-5]; name = "n"; def = (Err [1:4-5])}
     1. FunBinding {id_loc = [2:16-19];
          name = "foo"; async = false;
          generator = false; fn_loc = [2:7-38];
@@ -2173,13 +2413,18 @@ let%expect_test "function_return" =
               []));
            params =
            [FunParam {name = (Some "x"); t = (Annot Bound {ref_loc = [2:36-37]; name = "X"})}];
-           rest_param = None; return = (Err [2:38]);
-           predicate = None};
+           rest_param = None; this_param = None;
+           return = (Err [2:38]); predicate = None};
          statics = {}}
 
     Errors:
-    ([2:38], MissingAnnotation)
-    ([1:5], MissingAnnotation)
+    ([2:38],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([2:38], Expected_annotation_sort.FunctionReturn))))
+    ([1:4-5],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([1:4-5],
+           Expected_annotation_sort.VariableDefinition {name = "n"}))))
   |}]
 
 let%expect_test "function_return_2" =
@@ -2188,12 +2433,14 @@ let%expect_test "function_return_2" =
     export function bar(x: (typeof n) => void) { return 1; };
   |};
   [%expect {|
-    ESExports {names = { "bar" -> (ExportBinding 1) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 1)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"bar"|];
+        stars = []; strict = true}}
 
     Local defs:
-    0. Variable {id_loc = [1:4-5]; name = "n"; def = (Err [1:5])}
+    0. Variable {id_loc = [1:4-5]; name = "n"; def = (Err [1:4-5])}
     1. FunBinding {id_loc = [2:16-19];
          name = "bar"; async = false;
          generator = false; fn_loc = [2:7-42];
@@ -2214,17 +2461,23 @@ let%expect_test "function_return_2" =
                               t = (Ref LocalRef {ref_loc = [2:31-32]; index = 0})})}
                         ];
                       rest_param = None;
+                      this_param = None;
                       return = (Annot (Void [2:37-41]));
                       predicate = None}
                     )))}
              ];
-           rest_param = None; return = (Err [2:42]);
-           predicate = None};
+           rest_param = None; this_param = None;
+           return = (Err [2:42]); predicate = None};
          statics = {}}
 
     Errors:
-    ([2:42], MissingAnnotation)
-    ([1:5], MissingAnnotation)
+    ([2:42],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([2:42], Expected_annotation_sort.FunctionReturn))))
+    ([1:4-5],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([1:4-5],
+           Expected_annotation_sort.VariableDefinition {name = "n"}))))
   |}]
 
 let%expect_test "function_statics" =
@@ -2235,10 +2488,9 @@ let%expect_test "function_statics" =
     module.exports = bar;
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [4:17-20]; index = 0})
+    CJSModule {type_exports = [||];
+      exports = (Some (Ref LocalRef {ref_loc = [4:17-20]; index = 0}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Local defs:
     0. FunBinding {id_loc = [1:9-12];
@@ -2246,7 +2498,8 @@ let%expect_test "function_statics" =
          generator = false; fn_loc = [1:0-20];
          def =
          FunSig {tparams = Mono; params = [];
-           rest_param = None; return = (Annot (Void [1:16-20]));
+           rest_param = None; this_param = None;
+           return = (Annot (Void [1:16-20]));
            predicate = None};
          statics = { "x" -> ([3:4-5], (Ref LocalRef {ref_loc = [3:8-9]; index = 1})) }}
     1. Variable {id_loc = [2:6-7]; name = "x"; def = (Value (NumberLit ([2:10-12], 42., "42")))}
@@ -2260,9 +2513,11 @@ let%expect_test "function_predicates_1" =
     }
   |};
   [%expect {|
-    ESExports {names = { "foo" -> (ExportBinding 0) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"foo"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. FunBinding {id_loc = [2:16-19];
@@ -2271,7 +2526,8 @@ let%expect_test "function_predicates_1" =
          def =
          FunSig {tparams = Mono;
            params = [FunParam {name = (Some "x"); t = (Annot (Mixed [2:23-28]))}];
-           rest_param = None; return = (Annot (Boolean [2:31-38]));
+           rest_param = None; this_param = None;
+           return = (Annot (Boolean [2:31-38]));
            predicate = (Some ([3:2-21], None))};
          statics = {}} |}]
 
@@ -2283,9 +2539,11 @@ let%expect_test "function_predicates_2" =
     }
   |};
   [%expect {|
-    ESExports {names = { "foo" -> (ExportBinding 1) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 1)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"foo"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. DeclareFun {id_loc = [1:17-20];
@@ -2293,7 +2551,8 @@ let%expect_test "function_predicates_2" =
          def =
          FunSig {tparams = Mono;
            params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:24-29]))}];
-           rest_param = None; return = (Annot (Boolean [1:32-39]));
+           rest_param = None; this_param = None;
+           return = (Annot (Boolean [1:32-39]));
            predicate = (Some ([1:40-59], (Some (NullP "x"))))};
          tail = []}
     1. FunBinding {id_loc = [2:16-19];
@@ -2302,7 +2561,8 @@ let%expect_test "function_predicates_2" =
          def =
          FunSig {tparams = Mono;
            params = [FunParam {name = (Some "x"); t = (Annot (Mixed [2:23-28]))}];
-           rest_param = None; return = (Annot (Boolean [2:31-38]));
+           rest_param = None; this_param = None;
+           return = (Annot (Boolean [2:31-38]));
            predicate =
            (Some ([3:2-16],
                   (Some (LatentP ((Ref LocalRef {ref_loc = [3:9-12]; index = 0}), (("x", 0), []))))))};
@@ -2314,9 +2574,11 @@ let%expect_test "function_predicates_3" =
     declare export function foo(x: mixed): boolean %checks(bar(x));
   |};
   [%expect {|
-    ESExports {names = { "foo" -> (ExportBinding 1) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 1)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"foo"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. FunBinding {id_loc = [1:9-12];
@@ -2325,22 +2587,25 @@ let%expect_test "function_predicates_3" =
          def =
          FunSig {tparams = Mono;
            params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:16-21]))}];
-           rest_param = None; return = (Err [1:31]);
-           predicate = (Some ([1:34-52], (Some (NullP "x"))))};
+           rest_param = None; this_param = None;
+           return = (Err [1:31]); predicate = (Some ([1:34-52], (Some (NullP "x"))))};
          statics = {}}
     1. DeclareFun {id_loc = [2:24-27];
          name = "foo"; fn_loc = [2:27-46];
          def =
          FunSig {tparams = Mono;
            params = [FunParam {name = (Some "x"); t = (Annot (Mixed [2:31-36]))}];
-           rest_param = None; return = (Annot (Boolean [2:39-46]));
+           rest_param = None; this_param = None;
+           return = (Annot (Boolean [2:39-46]));
            predicate =
            (Some ([2:47-62],
                   (Some (LatentP ((Ref LocalRef {ref_loc = [2:55-58]; index = 0}), (("x", 0), []))))))};
          tail = []}
 
     Errors:
-    ([1:31], MissingAnnotation) |}]
+    ([1:31],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([1:31], Expected_annotation_sort.FunctionReturn)))) |}]
 
 let%expect_test "function_predicates_4" =
   print_sig {|
@@ -2351,9 +2616,11 @@ let%expect_test "function_predicates_4" =
     }
   |};
   [%expect {|
-    ESExports {names = { "isOne" -> (ExportBinding 0) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"isOne"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. FunBinding {id_loc = [3:16-21];
@@ -2362,7 +2629,8 @@ let%expect_test "function_predicates_4" =
          def =
          FunSig {tparams = Mono;
            params = [FunParam {name = (Some "x"); t = (Annot (Mixed [3:25-30]))}];
-           rest_param = None; return = (Annot (Boolean [3:33-40]));
+           rest_param = None; this_param = None;
+           return = (Annot (Boolean [3:33-40]));
            predicate = (Some ([4:2-17], None))};
          statics = {}} |}]
 
@@ -2374,9 +2642,11 @@ let%expect_test "function_predicates_5" =
     }
   |};
   [%expect {|
-    ESExports {names = { "isOne" -> (ExportBinding 0) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"isOne"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. FunBinding {id_loc = [2:16-21];
@@ -2385,7 +2655,8 @@ let%expect_test "function_predicates_5" =
          def =
          FunSig {tparams = Mono;
            params = [FunParam {name = (Some "x"); t = (Annot (Mixed [2:25-30]))}];
-           rest_param = None; return = (Annot (Boolean [2:33-40]));
+           rest_param = None; this_param = None;
+           return = (Annot (Boolean [2:33-40]));
            predicate = (Some ([3:2-19], None))};
          statics = {}} |}]
 
@@ -2395,10 +2666,9 @@ let%expect_test "async_function_1" =
     module.exports = foo;
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [2:17-20]; index = 0})
+    CJSModule {type_exports = [||];
+      exports = (Some (Ref LocalRef {ref_loc = [2:17-20]; index = 0}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Local defs:
     0. FunBinding {id_loc = [1:15-18];
@@ -2406,7 +2676,8 @@ let%expect_test "async_function_1" =
          generator = false; fn_loc = [1:6-20];
          def =
          FunSig {tparams = Mono; params = [];
-           rest_param = None; return = (AsyncVoidReturn [1:20]);
+           rest_param = None; this_param = None;
+           return = (AsyncVoidReturn [1:20]);
            predicate = None};
          statics = {}}
   |}]
@@ -2417,10 +2688,9 @@ let%expect_test "async_function_2" =
     module.exports = foo;
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [2:17-20]; index = 0})
+    CJSModule {type_exports = [||];
+      exports = (Some (Ref LocalRef {ref_loc = [2:17-20]; index = 0}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Local defs:
     0. FunBinding {id_loc = [1:15-18];
@@ -2428,12 +2698,14 @@ let%expect_test "async_function_2" =
          generator = false; fn_loc = [1:6-20];
          def =
          FunSig {tparams = Mono; params = [];
-           rest_param = None; return = (Err [1:20]);
-           predicate = None};
+           rest_param = None; this_param = None;
+           return = (Err [1:20]); predicate = None};
          statics = {}}
 
     Errors:
-    ([1:20], MissingAnnotation)
+    ([1:20],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([1:20], Expected_annotation_sort.FunctionReturn))))
   |}]
 
 let%expect_test "async_function_3" =
@@ -2441,20 +2713,24 @@ let%expect_test "async_function_3" =
     module.exports = async () => await 1;
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Value
-       FunExpr {loc = [1:17-36]; async = true;
-         generator = false;
-         def =
-         FunSig {tparams = Mono; params = [];
-           rest_param = None; return = (Err [1:25]);
-           predicate = None};
-         statics = {}})
+    CJSModule {type_exports = [||];
+      exports =
+      (Some (Value
+               FunExpr {loc = [1:17-36];
+                 async = true; generator = false;
+                 def =
+                 FunSig {tparams = Mono;
+                   params = []; rest_param = None;
+                   this_param = None;
+                   return = (Err [1:25]);
+                   predicate = None};
+                 statics = {}}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Errors:
-    ([1:25], MissingAnnotation)
+    ([1:25],
+     (SigError
+        (Signature_error.ExpectedAnnotation ([1:25], Expected_annotation_sort.FunctionReturn))))
   |}]
 
 let%expect_test "type_spread" =
@@ -2464,7 +2740,9 @@ let%expect_test "type_spread" =
     export type C = { ...A, ...B, c: null }
   |};
   [%expect {|
-    CJSExports {types = { "C" -> (ExportTypeBinding 2) }; type_stars = []; strict = true}
+    CJSModule {type_exports = [|(ExportTypeBinding 2)|];
+      exports = None;
+      info = CJSModuleInfo {type_export_keys = [|"C"|]; type_stars = []; strict = true}}
 
     Local defs:
     0. TypeAlias {id_loc = [1:5-6]; name = "A";
@@ -2507,7 +2785,9 @@ let%expect_test "inline_interface" =
     export type B = interface extends A { p: string };
   |};
   [%expect {|
-    CJSExports {types = { "B" -> (ExportTypeBinding 1) }; type_stars = []; strict = true}
+    CJSModule {type_exports = [|(ExportTypeBinding 1)|];
+      exports = None;
+      info = CJSModuleInfo {type_export_keys = [|"B"|]; type_stars = []; strict = true}}
 
     Local defs:
     0. TypeAlias {id_loc = [1:5-6]; name = "A";
@@ -2534,7 +2814,9 @@ let%expect_test "object_annot_optional" =
     export type A = { p?: string };
   |};
   [%expect {|
-    CJSExports {types = { "A" -> (ExportTypeBinding 0) }; type_stars = []; strict = true}
+    CJSModule {type_exports = [|(ExportTypeBinding 0)|];
+      exports = None;
+      info = CJSModuleInfo {type_export_keys = [|"A"|]; type_stars = []; strict = true}}
 
     Local defs:
     0. TypeAlias {id_loc = [1:12-13];
@@ -2554,7 +2836,9 @@ let%expect_test "interface_optional" =
     export interface I { p?: string }
   |};
   [%expect {|
-    CJSExports {types = { "I" -> (ExportTypeBinding 0) }; type_stars = []; strict = true}
+    CJSModule {type_exports = [|(ExportTypeBinding 0)|];
+      exports = None;
+      info = CJSModuleInfo {type_export_keys = [|"I"|]; type_stars = []; strict = true}}
 
     Local defs:
     0. Interface {id_loc = [1:17-18];
@@ -2572,7 +2856,9 @@ let%expect_test "interface_method" =
     export interface I { m(): void }
   |};
   [%expect {|
-    CJSExports {types = { "I" -> (ExportTypeBinding 0) }; type_stars = []; strict = true}
+    CJSModule {type_exports = [|(ExportTypeBinding 0)|];
+      exports = None;
+      info = CJSModuleInfo {type_export_keys = [|"I"|]; type_stars = []; strict = true}}
 
     Local defs:
     0. Interface {id_loc = [1:17-18];
@@ -2585,6 +2871,7 @@ let%expect_test "interface_method" =
                 (([1:21-22], [1:21-30],
                   FunSig {tparams = Mono;
                     params = []; rest_param = None;
+                    this_param = None;
                     return = (Annot (Void [1:26-30]));
                     predicate = None}),
                  [])) };
@@ -2596,7 +2883,9 @@ let%expect_test "object_annot_method" =
     export type A = { m(): void };
   |};
   [%expect {|
-    CJSExports {types = { "A" -> (ExportTypeBinding 0) }; type_stars = []; strict = true}
+    CJSModule {type_exports = [|(ExportTypeBinding 0)|];
+      exports = None;
+      info = CJSModuleInfo {type_export_keys = [|"A"|]; type_stars = []; strict = true}}
 
     Local defs:
     0. TypeAlias {id_loc = [1:12-13];
@@ -2612,6 +2901,7 @@ let%expect_test "object_annot_method" =
                   def =
                   FunSig {tparams = Mono;
                     params = []; rest_param = None;
+                    this_param = None;
                     return = (Annot (Void [1:23-27]));
                     predicate = None}} };
               proto = ObjAnnotImplicitProto})} |}]
@@ -2621,7 +2911,9 @@ let%expect_test "object_annot_call_poly" =
     export type A = { <T>(X): X };
   |};
   [%expect {|
-    CJSExports {types = { "A" -> (ExportTypeBinding 0) }; type_stars = []; strict = true}
+    CJSModule {type_exports = [|(ExportTypeBinding 0)|];
+      exports = None;
+      info = CJSModuleInfo {type_export_keys = [|"A"|]; type_stars = []; strict = true}}
 
     Local defs:
     0. TypeAlias {id_loc = [1:12-13];
@@ -2650,6 +2942,7 @@ let%expect_test "object_annot_call_poly" =
                             t = (TyRef (Unqualified BuiltinRef {ref_loc = [1:22-23]; name = "X"}))}
                            ];
                          rest_param = None;
+                         this_param = None;
                          return =
                          (TyRef (Unqualified BuiltinRef {ref_loc = [1:26-27]; name = "X"}));
                          predicate = None}
@@ -2661,7 +2954,9 @@ let%expect_test "object_annot_multiple_call" =
     export type A = { (): number, (): string };
   |};
   [%expect {|
-    CJSExports {types = { "A" -> (ExportTypeBinding 0) }; type_stars = []; strict = true}
+    CJSModule {type_exports = [|(ExportTypeBinding 0)|];
+      exports = None;
+      info = CJSModuleInfo {type_export_keys = [|"A"|]; type_stars = []; strict = true}}
 
     Local defs:
     0. TypeAlias {id_loc = [1:12-13];
@@ -2679,6 +2974,7 @@ let%expect_test "object_annot_multiple_call" =
                        FunSig {tparams = Mono;
                          params = [];
                          rest_param = None;
+                         this_param = None;
                          return = (Annot (String [1:34-40]));
                          predicate = None}
                        ))),
@@ -2687,6 +2983,7 @@ let%expect_test "object_annot_multiple_call" =
                         FunSig {tparams = Mono;
                           params = [];
                           rest_param = None;
+                          this_param = None;
                           return = (Annot (Number [1:22-28]));
                           predicate = None}
                         )))
@@ -2698,10 +2995,12 @@ let%expect_test "destruct_object_shared" =
     export const {a, b: {c, d}} = e;
   |};
   [%expect {|
-    ESExports {
-      names = { "a" -> (ExportBinding 0); "c" -> (ExportBinding 1); "d" -> (ExportBinding 2) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||];
+      exports = [|(ExportBinding 0); (ExportBinding 1); (ExportBinding 2)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"a"; "c"; "d"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. Variable {id_loc = [1:14-15]; name = "a"; def = (Pattern 1)}
@@ -2724,14 +3023,12 @@ let%expect_test "destruct_array_shared" =
     export const [a, b, {c, d}] = e;
   |};
   [%expect {|
-    ESExports {
-      names =
-      { "a" -> (ExportBinding 0);
-        "b" -> (ExportBinding 1);
-        "c" -> (ExportBinding 2);
-        "d" -> (ExportBinding 3) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||];
+      exports = [|(ExportBinding 0); (ExportBinding 1); (ExportBinding 2); (ExportBinding 3)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"a"; "b"; "c"; "d"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. Variable {id_loc = [1:14-15]; name = "a"; def = (Pattern 1)}
@@ -2757,8 +3054,9 @@ let%expect_test "cycle" =
     export type B = { p: ?A };
   |};
   [%expect {|
-    CJSExports {types = { "A" -> (ExportTypeBinding 0); "B" -> (ExportTypeBinding 1) };
-      type_stars = []; strict = true}
+    CJSModule {type_exports = [|(ExportTypeBinding 0); (ExportTypeBinding 1)|];
+      exports = None;
+      info = CJSModuleInfo {type_export_keys = [|"A"; "B"|]; type_stars = []; strict = true}}
 
     Local defs:
     0. TypeAlias {id_loc = [1:12-13];
@@ -2796,9 +3094,11 @@ let%expect_test "typeof loc" =
     export var a: typeof o.p.q;
   |};
   [%expect {|
-    ESExports {names = { "a" -> (ExportBinding 0) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"a"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. Variable {id_loc = [1:11-12];
@@ -2818,9 +3118,11 @@ let%expect_test "qualified_generic_typeapp_loc" =
     declare export var a: O.P.Q<T>;
   |};
   [%expect {|
-    ESExports {names = { "a" -> (ExportBinding 0) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"a"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. Variable {id_loc = [1:19-20];
@@ -2841,9 +3143,11 @@ let%expect_test "temporary_object_annot" =
     declare export var a: $TEMPORARY$object<{foo: string}>;
   |};
   [%expect {|
-    ESExports {names = { "a" -> (ExportBinding 0) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"a"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. Variable {id_loc = [1:19-20];
@@ -2865,9 +3169,12 @@ let%expect_test "export_ref_renaming" =
     export {a as b};
   |};
   [%expect {|
-    ESExports {names = { "b" -> (ExportRef LocalRef {ref_loc = [2:13-14]; index = 0}) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||];
+      exports = [|(ExportRef LocalRef {ref_loc = [2:13-14]; index = 0})|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"b"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. Variable {id_loc = [1:12-13]; name = "a"; def = (Annot (String [1:15-21]))} |}]
@@ -2877,9 +3184,11 @@ let%expect_test "union_annot" =
     declare export var a: string | number | null;
   |};
   [%expect {|
-    ESExports {names = { "a" -> (ExportBinding 0) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"a"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. Variable {id_loc = [1:19-20];
@@ -2895,9 +3204,11 @@ let%expect_test "intersection_annot" =
     declare export var a: string & number & null;
   |};
   [%expect {|
-    ESExports {names = { "a" -> (ExportBinding 0) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"a"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. Variable {id_loc = [1:19-20];
@@ -2919,14 +3230,12 @@ let%expect_test "class_extends" =
     declare export class C4 extends M.C {};
   |};
   [%expect {|
-    ESExports {
-      names =
-      { "C1" -> (ExportBinding 2);
-        "C2" -> (ExportBinding 3);
-        "C3" -> (ExportBinding 4);
-        "C4" -> (ExportBinding 5) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||];
+      exports = [|(ExportBinding 2); (ExportBinding 3); (ExportBinding 4); (ExportBinding 5)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"C1"; "C2"; "C3"; "C4"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. DeclareClassBinding {id_loc = [1:14-15];
@@ -2995,9 +3304,11 @@ let%expect_test "class_this" =
     }
   |};
   [%expect {|
-    ESExports {names = { "C" -> (ExportBinding 0) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"C"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:13-14];
@@ -3013,7 +3324,7 @@ let%expect_test "class_this" =
                def =
                FunSig {tparams = Mono;
                  params = []; rest_param = None;
-                 return = (Annot Bound {ref_loc = [2:7-11]; name = "this"});
+                 this_param = None; return = (Annot Bound {ref_loc = [2:7-11]; name = "this"});
                  predicate = None}} };
            own_props = {}}} |}]
 
@@ -3024,9 +3335,11 @@ let%expect_test "declare_class_this" =
     }
   |};
   [%expect {|
-    ESExports {names = { "C" -> (ExportBinding 0) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"C"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. DeclareClassBinding {id_loc = [1:21-22];
@@ -3042,6 +3355,7 @@ let%expect_test "declare_class_this" =
                 (([2:2-3], [2:2-11],
                   FunSig {tparams = Mono;
                     params = []; rest_param = None;
+                    this_param = None;
                     return = (Annot Bound {ref_loc = [2:7-11]; name = "this"});
                     predicate = None}),
                  [])) };
@@ -3055,13 +3369,18 @@ let%expect_test "existential" =
     declare export default C<*>;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [4:15-22]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    TyRefApp {loc = [4:23-27]; name = (Unqualified LocalRef {ref_loc = [4:23-24]; index = 0});
-      targs = [(Annot Exists {loc = [4:25-26]; force = true})]}
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [4:15-22];
+          def =
+          TyRefApp {loc = [4:23-27];
+            name = (Unqualified LocalRef {ref_loc = [4:23-24]; index = 0});
+            targs = [(Annot Exists {loc = [4:25-26]; force = true})]}}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:6-7];
@@ -3087,7 +3406,9 @@ let%expect_test "exact_by_default" =
     export type T = { p: string }
   |};
   [%expect {|
-    CJSExports {types = { "T" -> (ExportTypeBinding 0) }; type_stars = []; strict = true}
+    CJSModule {type_exports = [|(ExportTypeBinding 0)|];
+      exports = None;
+      info = CJSModuleInfo {type_export_keys = [|"T"|]; type_stars = []; strict = true}}
 
     Local defs:
     0. TypeAlias {id_loc = [1:12-13];
@@ -3106,33 +3427,63 @@ let%expect_test "cjs_export_props" =
     exports.bar = 1;
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
+    CJSModule {type_exports = [||];
+      exports =
+      (Some (Value
+               ObjLit {loc = [0:0]; frozen = true;
+                 proto = None;
+                 props =
+                 { "bar" ->
+                   (ObjValueField ([2:8-11], (
+                      Value (NumberLit ([2:14-15], 1., "1"))), Polarity.Neutral));
+                   "foo" ->
+                   (ObjValueField ([1:15-18], (
+                      Value (NumberLit ([1:21-22], 0., "0"))), Polarity.Neutral)) }}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}} |}]
 
-    Export_def:
-    (Value
-       ObjLit {loc = [0:0]; frozen = true;
-         proto = None;
-         props =
-         { "bar" ->
-           (ObjValueField ([2:8-11], (Value (NumberLit ([2:14-15], 1., "1"))), Polarity.Neutral));
-           "foo" ->
-           (ObjValueField ([1:15-18], (Value (NumberLit ([1:21-22], 0., "0"))), Polarity.Neutral)) }}) |}]
+let%expect_test "cjs_exports_clobber_shadowed_module_global" =
+  print_sig {|
+    var module;
+    module.exports = 0;
+  |};
+  [%expect {|
+    CJSModule {type_exports = [||]; exports = None;
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}} |}]
 
-let%expect_test "cjs_export_alias_TODO" =
+let%expect_test "cjs_exports_assign_shadowed_exports_global" =
+  print_sig {|
+    var exports;
+    exports.foo = 0;
+  |};
+  [%expect {|
+    CJSModule {type_exports = [||]; exports = None;
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}} |}]
+
+let%expect_test "cjs_exports_assign_shadowed_module_global" =
+  print_sig {|
+    var module;
+    module.exports.foo = 0;
+  |};
+  [%expect {|
+    CJSModule {type_exports = [||]; exports = None;
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}} |}]
+
+let%expect_test "cjs_export_shadowed_hoisted_TODO" =
   print_sig {|
     module.exports.foo = 0;
     function module() {}
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Value
-       ObjLit {loc = [0:0]; frozen = true;
-         proto = None;
-         props =
-         { "foo" ->
-           (ObjValueField ([1:15-18], (Value (NumberLit ([1:21-22], 0., "0"))), Polarity.Neutral)) }})
+    CJSModule {type_exports = [||];
+      exports =
+      (Some (Value
+               ObjLit {loc = [0:0]; frozen = true;
+                 proto = None;
+                 props =
+                 { "foo" ->
+                   (ObjValueField ([1:15-18], (
+                      Value (NumberLit ([1:21-22], 0., "0"))), Polarity.Neutral)) }}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
   |}]
 
 let%expect_test "cjs_export_fun_expr_props" =
@@ -3142,19 +3493,21 @@ let%expect_test "cjs_export_fun_expr_props" =
     exports.bar = 1;
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Value
-       FunExpr {loc = [1:17-27]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono; params = [];
-           rest_param = None; return = (Annot (Void [1:27]));
-           predicate = None};
-         statics =
-         { "bar" -> ([3:8-11], (Value (NumberLit ([3:14-15], 1., "1"))));
-           "foo" -> ([2:15-18], (Value (NumberLit ([2:21-22], 0., "0")))) }}) |}]
+    CJSModule {type_exports = [||];
+      exports =
+      (Some (Value
+               FunExpr {loc = [1:17-27];
+                 async = false; generator = false;
+                 def =
+                 FunSig {tparams = Mono;
+                   params = []; rest_param = None;
+                   this_param = None;
+                   return = (Annot (Void [1:27]));
+                   predicate = None};
+                 statics =
+                 { "bar" -> ([3:8-11], (Value (NumberLit ([3:14-15], 1., "1"))));
+                   "foo" -> ([2:15-18], (Value (NumberLit ([2:21-22], 0., "0")))) }}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}} |}]
 
 let%expect_test "cjs_export_fun_binding_props" =
   print_sig {|
@@ -3163,10 +3516,9 @@ let%expect_test "cjs_export_fun_binding_props" =
     exports.bar = 1;
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [1:26-29]; index = 0})
+    CJSModule {type_exports = [||];
+      exports = (Some (Ref LocalRef {ref_loc = [1:26-29]; index = 0}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Local defs:
     0. FunBinding {id_loc = [1:26-29];
@@ -3174,7 +3526,8 @@ let%expect_test "cjs_export_fun_binding_props" =
          generator = false; fn_loc = [1:17-31];
          def =
          FunSig {tparams = Mono; params = [];
-           rest_param = None; return = (Annot (Void [1:31]));
+           rest_param = None; this_param = None;
+           return = (Annot (Void [1:31]));
            predicate = None};
          statics =
          { "bar" -> ([3:8-11], (Value (NumberLit ([3:14-15], 1., "1"))));
@@ -3186,9 +3539,11 @@ let%expect_test "es_export_named_fun_props" =
     foo.bar = 1;
   |};
   [%expect {|
-    ESExports {names = { "foo" -> (ExportBinding 0) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"foo"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. FunBinding {id_loc = [1:16-19];
@@ -3196,7 +3551,8 @@ let%expect_test "es_export_named_fun_props" =
          generator = false; fn_loc = [1:7-21];
          def =
          FunSig {tparams = Mono; params = [];
-           rest_param = None; return = (Annot (Void [1:21]));
+           rest_param = None; this_param = None;
+           return = (Annot (Void [1:21]));
            predicate = None};
          statics = { "bar" -> ([2:4-7], (Value (NumberLit ([2:10-11], 1., "1")))) }} |}]
 
@@ -3206,9 +3562,12 @@ let%expect_test "es_export_default_fun_props" =
     foo.bar = 1;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefaultBinding {default_loc = [1:7-14]; index = 0} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||];
+      exports = [|ExportDefaultBinding {default_loc = [1:7-14]; index = 0}|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. FunBinding {id_loc = [1:24-27];
@@ -3216,7 +3575,8 @@ let%expect_test "es_export_default_fun_props" =
          generator = false; fn_loc = [1:15-29];
          def =
          FunSig {tparams = Mono; params = [];
-           rest_param = None; return = (Annot (Void [1:29]));
+           rest_param = None; this_param = None;
+           return = (Annot (Void [1:29]));
            predicate = None};
          statics = { "bar" -> ([2:4-7], (Value (NumberLit ([2:10-11], 1., "1")))) }} |}]
 
@@ -3227,10 +3587,9 @@ let%expect_test "fun_binding_assign" =
     module.exports = foo;
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [3:17-20]; index = 0})
+    CJSModule {type_exports = [||];
+      exports = (Some (Ref LocalRef {ref_loc = [3:17-20]; index = 0}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Local defs:
     0. FunBinding {id_loc = [1:9-12];
@@ -3238,7 +3597,8 @@ let%expect_test "fun_binding_assign" =
          generator = false; fn_loc = [1:0-14];
          def =
          FunSig {tparams = Mono; params = [];
-           rest_param = None; return = (Annot (Void [1:14]));
+           rest_param = None; this_param = None;
+           return = (Annot (Void [1:14]));
            predicate = None};
          statics = { "bar" -> ([2:4-7], (Value (NumberLit ([2:10-11], 0., "0")))) }} |}]
 
@@ -3249,10 +3609,9 @@ let%expect_test "fun_const_assign" =
     module.exports = foo;
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [3:17-20]; index = 0})
+    CJSModule {type_exports = [||];
+      exports = (Some (Ref LocalRef {ref_loc = [3:17-20]; index = 0}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Local defs:
     0. Variable {id_loc = [1:6-9]; name = "foo";
@@ -3263,7 +3622,7 @@ let%expect_test "fun_const_assign" =
               def =
               FunSig {tparams = Mono;
                 params = []; rest_param = None;
-                return = (Annot (Void [1:22]));
+                this_param = None; return = (Annot (Void [1:22]));
                 predicate = None};
               statics = { "bar" -> ([2:4-7], (Value (NumberLit ([2:10-11], 0., "0")))) }})} |}]
 
@@ -3274,10 +3633,9 @@ let%expect_test "ref_const_assign" =
     module.exports = foo;
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
-
-    Export_def:
-    (Ref LocalRef {ref_loc = [3:17-20]; index = 1})
+    CJSModule {type_exports = [||];
+      exports = (Some (Ref LocalRef {ref_loc = [3:17-20]; index = 1}));
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Local defs:
     0. FunBinding {id_loc = [1:21-22];
@@ -3285,7 +3643,8 @@ let%expect_test "ref_const_assign" =
          fn_loc = [1:12-24];
          def =
          FunSig {tparams = Mono; params = [];
-           rest_param = None; return = (Annot (Void [1:24]));
+           rest_param = None; this_param = None;
+           return = (Annot (Void [1:24]));
            predicate = None};
          statics = { "bar" -> ([2:4-7], (Value (NumberLit ([2:10-11], 0., "0")))) }}
     1. Variable {id_loc = [1:6-9]; name = "foo";
@@ -3296,9 +3655,11 @@ let%expect_test "obj_annot_proto" =
     declare export var o: { __proto__: null };
   |};
   [%expect {|
-    ESExports {names = { "o" -> (ExportBinding 0) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"o"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. Variable {id_loc = [1:19-20];
@@ -3328,17 +3689,16 @@ let%expect_test "getter_setter" =
     };
   |};
   [%expect {|
-    ESExports {
-      names =
-      { "a" -> (ExportBinding 0);
-        "b" -> (ExportBinding 1);
-        "c" -> (ExportBinding 2);
-        "d" -> (ExportBinding 3);
-        "e" -> (ExportBinding 4);
-        "f" -> (ExportBinding 5);
-        "g" -> (ExportBinding 6) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||];
+      exports =
+      [|(ExportBinding 0); (ExportBinding 1); (
+        ExportBinding 2); (ExportBinding 3); (
+        ExportBinding 4); (ExportBinding 5); (
+        ExportBinding 6)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"a"; "b"; "c"; "d"; "e"; "f"; "g"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. Variable {id_loc = [1:13-14];
@@ -3414,23 +3774,28 @@ let%expect_test "predicate_exists" =
     }
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       FunExpr {loc = [1:15-3:1]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono;
-           params =
-           [FunParam {name = (Some "x");
-              t = (Annot (Maybe ([1:27-34], (Annot (String [1:28-34])))))}
-             ];
-           rest_param = None; return = (Annot (Mixed [1:37-42]));
-           predicate = (Some ([2:2-11], (Some (ExistsP ("x", (Some [2:9-10]))))))};
-         statics = {}}) |}]
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [1:7-14];
+          def =
+          (Value
+             FunExpr {loc = [1:15-3:1];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params =
+                 [FunParam {name = (Some "x");
+                    t = (Annot (Maybe ([1:27-34], (Annot (String [1:28-34])))))}
+                   ];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Mixed [1:37-42]));
+                 predicate = (Some ([2:2-11], (Some (ExistsP ("x", (Some [2:9-10]))))))};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}} |}]
 
 let%expect_test "predicate_instanceof" =
   print_sig {|
@@ -3440,22 +3805,27 @@ let%expect_test "predicate_instanceof" =
     }
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [2:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       FunExpr {loc = [2:15-4:1]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono;
-           params = [FunParam {name = (Some "x"); t = (Annot (Mixed [2:27-32]))}];
-           rest_param = None; return = (Annot (Boolean [2:35-42]));
-           predicate =
-           (Some ([3:2-24],
-                  (Some (InstanceofP ("x", (Ref LocalRef {ref_loc = [3:22-23]; index = 0}))))))};
-         statics = {}})
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [2:7-14];
+          def =
+          (Value
+             FunExpr {loc = [2:15-4:1];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params = [FunParam {name = (Some "x"); t = (Annot (Mixed [2:27-32]))}];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Boolean [2:35-42]));
+                 predicate =
+                 (Some ([3:2-24],
+                        (Some (InstanceofP ("x", (Ref LocalRef {ref_loc = [3:22-23]; index = 0}))))))};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:6-7];
@@ -3472,20 +3842,25 @@ let%expect_test "predicate_typeof" =
     }
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       FunExpr {loc = [1:15-3:1]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono;
-           params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
-           rest_param = None; return = (Annot (Boolean [1:35-42]));
-           predicate = (Some ([2:2-30], (Some (StrP ("x", [2:9-29])))))};
-         statics = {}}) |}]
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [1:7-14];
+          def =
+          (Value
+             FunExpr {loc = [1:15-3:1];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Boolean [1:35-42]));
+                 predicate = (Some ([2:2-30], (Some (StrP ("x", [2:9-29])))))};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}} |}]
 
 let%expect_test "predicate_typeof_template_literal" =
   print_sig {|
@@ -3494,20 +3869,25 @@ let%expect_test "predicate_typeof_template_literal" =
     }
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       FunExpr {loc = [1:15-3:1]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono;
-           params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
-           rest_param = None; return = (Annot (Boolean [1:35-42]));
-           predicate = (Some ([2:2-30], (Some (StrP ("x", [2:9-29])))))};
-         statics = {}}) |}]
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [1:7-14];
+          def =
+          (Value
+             FunExpr {loc = [1:15-3:1];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Boolean [1:35-42]));
+                 predicate = (Some ([2:2-30], (Some (StrP ("x", [2:9-29])))))};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}} |}]
 
 let%expect_test "predicate_literal_string" =
   print_sig {|
@@ -3516,20 +3896,26 @@ let%expect_test "predicate_literal_string" =
     }
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       FunExpr {loc = [1:15-3:1]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono;
-           params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
-           rest_param = None; return = (Annot (Boolean [1:35-42]));
-           predicate = (Some ([2:2-21], (Some (SingletonStrP ("x", [2:15-20], true, "foo")))))};
-         statics = {}}) |}]
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [1:7-14];
+          def =
+          (Value
+             FunExpr {loc = [1:15-3:1];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Boolean [1:35-42]));
+                 predicate =
+                 (Some ([2:2-21], (Some (SingletonStrP ("x", [2:15-20], true, "foo")))))};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}} |}]
 
 let%expect_test "predicate_literal_number" =
   print_sig {|
@@ -3538,20 +3924,26 @@ let%expect_test "predicate_literal_number" =
     }
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       FunExpr {loc = [1:15-3:1]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono;
-           params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
-           rest_param = None; return = (Annot (Boolean [1:35-42]));
-           predicate = (Some ([2:2-18], (Some (SingletonNumP ("x", [2:15-17], true, 42., "42")))))};
-         statics = {}}) |}]
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [1:7-14];
+          def =
+          (Value
+             FunExpr {loc = [1:15-3:1];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Boolean [1:35-42]));
+                 predicate =
+                 (Some ([2:2-18], (Some (SingletonNumP ("x", [2:15-17], true, 42., "42")))))};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}} |}]
 
 let%expect_test "predicate_literal_boolean" =
   print_sig {|
@@ -3560,20 +3952,25 @@ let%expect_test "predicate_literal_boolean" =
     }
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       FunExpr {loc = [1:15-3:1]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono;
-           params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
-           rest_param = None; return = (Annot (Boolean [1:35-42]));
-           predicate = (Some ([2:2-20], (Some (SingletonBoolP ("x", [2:15-19], true)))))};
-         statics = {}}) |}]
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [1:7-14];
+          def =
+          (Value
+             FunExpr {loc = [1:15-3:1];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Boolean [1:35-42]));
+                 predicate = (Some ([2:2-20], (Some (SingletonBoolP ("x", [2:15-19], true)))))};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}} |}]
 
 let%expect_test "predicate_literal_null" =
   print_sig {|
@@ -3582,20 +3979,25 @@ let%expect_test "predicate_literal_null" =
     }
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       FunExpr {loc = [1:15-3:1]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono;
-           params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
-           rest_param = None; return = (Annot (Boolean [1:35-42]));
-           predicate = (Some ([2:2-20], (Some (NullP "x"))))};
-         statics = {}}) |}]
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [1:7-14];
+          def =
+          (Value
+             FunExpr {loc = [1:15-3:1];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Boolean [1:35-42]));
+                 predicate = (Some ([2:2-20], (Some (NullP "x"))))};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}} |}]
 
 let%expect_test "predicate_maybe" =
   print_sig {|
@@ -3604,20 +4006,25 @@ let%expect_test "predicate_maybe" =
     }
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       FunExpr {loc = [1:15-3:1]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono;
-           params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
-           rest_param = None; return = (Annot (Boolean [1:35-42]));
-           predicate = (Some ([2:2-19], (Some (MaybeP "x"))))};
-         statics = {}}) |}]
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [1:7-14];
+          def =
+          (Value
+             FunExpr {loc = [1:15-3:1];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Boolean [1:35-42]));
+                 predicate = (Some ([2:2-19], (Some (MaybeP "x"))))};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}} |}]
 
 let%expect_test "predicate_template_literal" =
   print_sig {|
@@ -3626,20 +4033,26 @@ let%expect_test "predicate_template_literal" =
     }
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       FunExpr {loc = [1:15-3:1]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono;
-           params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
-           rest_param = None; return = (Annot (Boolean [1:35-42]));
-           predicate = (Some ([2:2-21], (Some (SingletonStrP ("x", [2:15-20], true, "foo")))))};
-         statics = {}}) |}]
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [1:7-14];
+          def =
+          (Value
+             FunExpr {loc = [1:15-3:1];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Boolean [1:35-42]));
+                 predicate =
+                 (Some ([2:2-21], (Some (SingletonStrP ("x", [2:15-20], true, "foo")))))};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}} |}]
 
 let%expect_test "predicate_negative_number_literal" =
   print_sig {|
@@ -3648,21 +4061,26 @@ let%expect_test "predicate_negative_number_literal" =
     }
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       FunExpr {loc = [1:15-3:1]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono;
-           params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
-           rest_param = None; return = (Annot (Boolean [1:35-42]));
-           predicate =
-           (Some ([2:2-19], (Some (SingletonNumP ("x", [2:15-18], true, -42., "-42")))))};
-         statics = {}}) |}]
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [1:7-14];
+          def =
+          (Value
+             FunExpr {loc = [1:15-3:1];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Boolean [1:35-42]));
+                 predicate =
+                 (Some ([2:2-19], (Some (SingletonNumP ("x", [2:15-18], true, -42., "-42")))))};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}} |}]
 
 let%expect_test "predicate_undefined" =
   print_sig {|
@@ -3671,20 +4089,25 @@ let%expect_test "predicate_undefined" =
     }
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       FunExpr {loc = [1:15-3:1]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono;
-           params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
-           rest_param = None; return = (Annot (Boolean [1:35-42]));
-           predicate = (Some ([2:2-25], (Some (VoidP "x"))))};
-         statics = {}}) |}]
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [1:7-14];
+          def =
+          (Value
+             FunExpr {loc = [1:15-3:1];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Boolean [1:35-42]));
+                 predicate = (Some ([2:2-25], (Some (VoidP "x"))))};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}} |}]
 
 let%expect_test "predicate_undefined_shadow" =
   (* TODO: should not extract predicate *)
@@ -3695,20 +4118,25 @@ let%expect_test "predicate_undefined_shadow" =
     var undefined = 42;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       FunExpr {loc = [1:15-3:1]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono;
-           params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
-           rest_param = None; return = (Annot (Boolean [1:35-42]));
-           predicate = (Some ([2:2-25], (Some (VoidP "x"))))};
-         statics = {}}) |}]
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [1:7-14];
+          def =
+          (Value
+             FunExpr {loc = [1:15-3:1];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Boolean [1:35-42]));
+                 predicate = (Some ([2:2-25], (Some (VoidP "x"))))};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}} |}]
 
 let%expect_test "predicate_void" =
   print_sig {|
@@ -3717,20 +4145,25 @@ let%expect_test "predicate_void" =
     }
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       FunExpr {loc = [1:15-3:1]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono;
-           params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
-           rest_param = None; return = (Annot (Boolean [1:35-42]));
-           predicate = (Some ([2:2-22], (Some (VoidP "x"))))};
-         statics = {}}) |}]
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [1:7-14];
+          def =
+          (Value
+             FunExpr {loc = [1:15-3:1];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Boolean [1:35-42]));
+                 predicate = (Some ([2:2-22], (Some (VoidP "x"))))};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}} |}]
 
 let%expect_test "predicate_sentinel_string" =
   print_sig {|
@@ -3740,26 +4173,32 @@ let%expect_test "predicate_sentinel_string" =
     }
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [2:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [2:7-14];
+          def =
+          (Value
+             FunExpr {loc = [2:15-4:1];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params =
+                 [FunParam {name = (Some "o");
+                    t = (TyRef (Unqualified RemoteRef {ref_loc = [2:27-28]; index = 0}))}
+                   ];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Boolean [2:31-38]));
+                 predicate =
+                 (Some ([3:2-26], (Some (SentinelStrP ("o", "type", [3:20-25], "foo")))))};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Module refs:
     0. foo
-
-    Export_def:
-    (Value
-       FunExpr {loc = [2:15-4:1]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono;
-           params =
-           [FunParam {name = (Some "o");
-              t = (TyRef (Unqualified RemoteRef {ref_loc = [2:27-28]; index = 0}))}
-             ];
-           rest_param = None; return = (Annot (Boolean [2:31-38]));
-           predicate = (Some ([3:2-26], (Some (SentinelStrP ("o", "type", [3:20-25], "foo")))))};
-         statics = {}})
 
     Remote refs:
     0. ImportType {id_loc = [1:13-14]; name = "T"; index = 0; remote = "T"} |}]
@@ -3773,29 +4212,34 @@ let%expect_test "predicate_sentinel_expr" =
     }
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [3:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [3:7-14];
+          def =
+          (Value
+             FunExpr {loc = [3:15-5:1];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params =
+                 [FunParam {name = (Some "o");
+                    t = (TyRef (Unqualified RemoteRef {ref_loc = [3:27-28]; index = 0}))}
+                   ];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Boolean [3:31-38]));
+                 predicate =
+                 (Some ([4:2-24],
+                        (Some (SentinelExprP ("o", "type",
+                                 (Ref LocalRef {ref_loc = [4:20-23]; index = 0}))))))};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Module refs:
     0. foo
-
-    Export_def:
-    (Value
-       FunExpr {loc = [3:15-5:1]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono;
-           params =
-           [FunParam {name = (Some "o");
-              t = (TyRef (Unqualified RemoteRef {ref_loc = [3:27-28]; index = 0}))}
-             ];
-           rest_param = None; return = (Annot (Boolean [3:31-38]));
-           predicate =
-           (Some ([4:2-24],
-                  (Some (SentinelExprP ("o", "type",
-                           (Ref LocalRef {ref_loc = [4:20-23]; index = 0}))))))};
-         statics = {}})
 
     Local defs:
     0. Variable {id_loc = [2:6-9]; name = "foo"; def = (Value (StringLit ([2:12-17], "foo")))}
@@ -3810,20 +4254,25 @@ let%expect_test "predicate_Array_isArray" =
     }
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefault {default_loc = [1:7-14]} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
-
-    Export_def:
-    (Value
-       FunExpr {loc = [1:15-3:1]; async = false;
-         generator = false;
-         def =
-         FunSig {tparams = Mono;
-           params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
-           rest_param = None; return = (Annot (Boolean [1:35-42]));
-           predicate = (Some ([2:2-26], (Some (ArrP "x"))))};
-         statics = {}}) |}]
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [1:7-14];
+          def =
+          (Value
+             FunExpr {loc = [1:15-3:1];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Boolean [1:35-42]));
+                 predicate = (Some ([2:2-26], (Some (ArrP "x"))))};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}} |}]
 
 let%expect_test "predicate_latent" =
   print_sig {|
@@ -3838,9 +4287,11 @@ let%expect_test "predicate_latent" =
     }
   |};
   [%expect {|
-    ESExports {names = { "h" -> (ExportBinding 2) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 2)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"h"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. FunBinding {id_loc = [1:9-10];
@@ -3849,7 +4300,8 @@ let%expect_test "predicate_latent" =
          def =
          FunSig {tparams = Mono;
            params = [FunParam {name = (Some "a"); t = (Annot (Mixed [1:14-19]))}];
-           rest_param = None; return = (Annot (Boolean [1:22-29]));
+           rest_param = None; this_param = None;
+           return = (Annot (Boolean [1:22-29]));
            predicate = (Some ([2:2-31], (Some (StrP ("a", [2:9-30])))))};
          statics = {}}
     1. FunBinding {id_loc = [4:9-10];
@@ -3860,7 +4312,8 @@ let%expect_test "predicate_latent" =
            params =
            [FunParam {name = (Some "_"); t = (Annot (Mixed [4:14-19]))};
              FunParam {name = (Some "b"); t = (Annot (Mixed [4:24-29]))}];
-           rest_param = None; return = (Annot (Boolean [4:32-39]));
+           rest_param = None; this_param = None;
+           return = (Annot (Boolean [4:32-39]));
            predicate = (Some ([5:2-31], (Some (NumP ("b", [5:9-30])))))};
          statics = {}}
     2. FunBinding {id_loc = [7:16-17];
@@ -3871,7 +4324,8 @@ let%expect_test "predicate_latent" =
            params =
            [FunParam {name = (Some "a"); t = (Annot (Mixed [7:21-26]))};
              FunParam {name = (Some "b"); t = (Annot (Mixed [7:31-36]))}];
-           rest_param = None; return = (Annot (Boolean [7:39-46]));
+           rest_param = None; this_param = None;
+           return = (Annot (Boolean [7:39-46]));
            predicate =
            (Some ([8:2-27],
                   (Some (AndP (
@@ -3892,30 +4346,31 @@ let%expect_test "long_string_lit" =
     declare export var d: $TEMPORARY$string<"dddd">;
   |};
   [%expect {|
-    ESExports {
-      names =
-      { "a" -> (ExportBinding 0);
-        "b" -> (ExportBinding 1);
-        "c" -> (ExportBinding 2);
-        "d" -> (ExportBinding 3) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||];
+      exports = [|(ExportBinding 0); (ExportBinding 1); (ExportBinding 2); (ExportBinding 3)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"a"; "b"; "c"; "d"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. Variable {id_loc = [1:13-14]; name = "a"; def = (Value (StringLit ([1:17-22], "aaa")))}
     1. Variable {id_loc = [2:13-14]; name = "b"; def = (Value (LongStringLit [2:17-23]))}
     2. Variable {id_loc = [3:19-20];
-         name = "c"; def = (Annot (TEMPORARY_String ([3:22-46], "ccc")))}
-    3. Variable {id_loc = [4:19-20]; name = "d"; def = (Annot (TEMPORARY_LongString [4:22-47]))} |}]
+         name = "c"; def = (Annot (TEMPORARY_String ([3:40-45], "ccc")))}
+    3. Variable {id_loc = [4:19-20]; name = "d"; def = (Annot (TEMPORARY_LongString [4:40-46]))} |}]
 
 let%expect_test "export_default_function_binding" =
   print_sig {|
     export default function f(): void {}
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefaultBinding {default_loc = [1:7-14]; index = 0} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||];
+      exports = [|ExportDefaultBinding {default_loc = [1:7-14]; index = 0}|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. FunBinding {id_loc = [1:24-25];
@@ -3923,7 +4378,8 @@ let%expect_test "export_default_function_binding" =
          fn_loc = [1:15-33];
          def =
          FunSig {tparams = Mono; params = [];
-           rest_param = None; return = (Annot (Void [1:29-33]));
+           rest_param = None; this_param = None;
+           return = (Annot (Void [1:29-33]));
            predicate = None};
          statics = {}} |}]
 
@@ -3932,9 +4388,12 @@ let%expect_test "export_default_class_binding" =
     export default class C {}
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefaultBinding {default_loc = [1:7-14]; index = 0} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||];
+      exports = [|ExportDefaultBinding {default_loc = [1:7-14]; index = 0}|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. ClassBinding {id_loc = [1:21-22];
@@ -3949,16 +4408,20 @@ let%expect_test "declared_export_default_function_binding" =
     declare export default function f(): void;
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefaultBinding {default_loc = [1:15-22]; index = 0} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||];
+      exports = [|ExportDefaultBinding {default_loc = [1:15-22]; index = 0}|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. DeclareFun {id_loc = [1:32-33];
          name = "f"; fn_loc = [1:33-41];
          def =
          FunSig {tparams = Mono; params = [];
-           rest_param = None; return = (Annot (Void [1:37-41]));
+           rest_param = None; this_param = None;
+           return = (Annot (Void [1:37-41]));
            predicate = None};
          tail = []} |}]
 
@@ -3967,9 +4430,12 @@ let%expect_test "declared_export_default_class_binding" =
     declare export default class C {};
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefaultBinding {default_loc = [1:15-22]; index = 0} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||];
+      exports = [|ExportDefaultBinding {default_loc = [1:15-22]; index = 0}|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. DeclareClassBinding {id_loc = [1:29-30];
@@ -3987,41 +4453,46 @@ let%expect_test "module_ref_prefix" =
     module.exports = "m#foo";
   |};
   [%expect {|
-    CJSExports {types = {}; type_stars = []; strict = true}
+    CJSModule {type_exports = [||]; exports = (Some ModuleRef {loc = [1:17-24]; index = 0});
+      info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}}
 
     Module refs:
-    0. foo
-
-    Export_def:
-    ModuleRef {loc = [1:17-24]; index = 0} |}]
+    0. foo |}]
 
 let%expect_test "enum_export" =
   print_sig {|
     export enum E { A, B };
   |};
   [%expect {|
-    ESExports {names = { "E" -> (ExportBinding 0) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"E"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. EnumBinding {id_loc = [1:12-13];
          name = "E"; rep = StringRep {truthy = true};
-         members = { "A" -> [1:16-17]; "B" -> [1:19-20] }} |}]
+         members = { "A" -> [1:16-17]; "B" -> [1:19-20] };
+         has_unknown_members = false} |}]
 
 let%expect_test "enum_default_export" =
   print_sig {|
     export default enum E { A, B }
   |};
   [%expect {|
-    ESExports {names = { "default" -> ExportDefaultBinding {default_loc = [1:7-14]; index = 0} };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||];
+      exports = [|ExportDefaultBinding {default_loc = [1:7-14]; index = 0}|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. EnumBinding {id_loc = [1:20-21];
          name = "E"; rep = StringRep {truthy = true};
-         members = { "A" -> [1:24-25]; "B" -> [1:27-28] }}
+         members = { "A" -> [1:24-25]; "B" -> [1:27-28] };
+         has_unknown_members = false}
   |}]
 
 let%expect_test "enum_stmt" =
@@ -4030,107 +4501,148 @@ let%expect_test "enum_stmt" =
     export {E}
   |};
   [%expect {|
-    ESExports {names = { "E" -> (ExportRef LocalRef {ref_loc = [2:8-9]; index = 0}) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||];
+      exports = [|(ExportRef LocalRef {ref_loc = [2:8-9]; index = 0})|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"E"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. EnumBinding {id_loc = [1:5-6];
          name = "E"; rep = StringRep {truthy = true};
-         members = { "A" -> [1:9-10]; "B" -> [1:12-13] }} |}]
+         members = { "A" -> [1:9-10]; "B" -> [1:12-13] };
+         has_unknown_members = false} |}]
 
 let%expect_test "enum_bool_lit" =
   print_sig {|
     export enum E { A = true }
   |};
   [%expect {|
-    ESExports {names = { "E" -> (ExportBinding 0) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"E"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. EnumBinding {id_loc = [1:12-13];
          name = "E"; rep = (BoolRep (Some true));
-         members = { "A" -> [1:16-24] }} |}]
+         members = { "A" -> [1:16-24] };
+         has_unknown_members = false} |}]
 
 let%expect_test "enum_bool" =
   print_sig {|
     export enum E { A = true, B = false }
   |};
   [%expect {|
-    ESExports {names = { "E" -> (ExportBinding 0) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"E"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. EnumBinding {id_loc = [1:12-13];
          name = "E"; rep = (BoolRep None);
-         members = { "A" -> [1:16-24]; "B" -> [1:26-35] }} |}]
+         members = { "A" -> [1:16-24]; "B" -> [1:26-35] };
+         has_unknown_members = false} |}]
 
 let%expect_test "enum_number_truthy" =
   print_sig {|
     export enum E { A = 1, B = 2 }
   |};
   [%expect {|
-    ESExports {names = { "E" -> (ExportBinding 0) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"E"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. EnumBinding {id_loc = [1:12-13];
          name = "E"; rep = NumberRep {truthy = true};
-         members = { "A" -> [1:16-21]; "B" -> [1:23-28] }} |}]
+         members = { "A" -> [1:16-21]; "B" -> [1:23-28] };
+         has_unknown_members = false} |}]
 
 let%expect_test "enum_number_any" =
   print_sig {|
     export enum E { A = 0, B = 1 }
   |};
   [%expect {|
-    ESExports {names = { "E" -> (ExportBinding 0) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"E"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. EnumBinding {id_loc = [1:12-13];
          name = "E"; rep = NumberRep {truthy = false};
-         members = { "A" -> [1:16-21]; "B" -> [1:23-28] }} |}]
+         members = { "A" -> [1:16-21]; "B" -> [1:23-28] };
+         has_unknown_members = false} |}]
 
 let%expect_test "enum_string_any" =
   print_sig {|
     export enum E { A = "", B = "B" }
   |};
   [%expect {|
-    ESExports {names = { "E" -> (ExportBinding 0) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"E"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. EnumBinding {id_loc = [1:12-13];
          name = "E"; rep = StringRep {truthy = false};
-         members = { "A" -> [1:16-22]; "B" -> [1:24-31] }} |}]
+         members = { "A" -> [1:16-22]; "B" -> [1:24-31] };
+         has_unknown_members = false} |}]
 
 let%expect_test "enum_symbol" =
   print_sig {|
     export enum E of symbol { A, B }
   |};
   [%expect {|
-    ESExports {names = { "E" -> (ExportBinding 0) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"E"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. EnumBinding {id_loc = [1:12-13];
          name = "E"; rep = SymbolRep;
-         members = { "A" -> [1:26-27]; "B" -> [1:29-30] }} |}]
+         members = { "A" -> [1:26-27]; "B" -> [1:29-30] };
+         has_unknown_members = false} |}]
+
+let%expect_test "enum_unknown_members" =
+  print_sig {|
+    export enum E { A, B, ... };
+  |};
+  [%expect {|
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"E"|];
+        stars = []; strict = true}}
+
+    Local defs:
+    0. EnumBinding {id_loc = [1:12-13];
+         name = "E"; rep = StringRep {truthy = true};
+         members = { "A" -> [1:16-17]; "B" -> [1:19-20] };
+         has_unknown_members = true} |}]
 
 let%expect_test "enum_disabled" =
   print_sig ~enable_enums:false {|
     export enum E {}
   |};
   [%expect {|
-    ESExports {names = { "E" -> (ExportBinding 0) };
-      types = {}; stars = []; type_stars = [];
-      strict = true}
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"E"|];
+        stars = []; strict = true}}
 
     Local defs:
     0. DisabledEnumBinding {id_loc = [1:12-13]; name = "E"} |}]
@@ -4146,7 +4658,7 @@ let%expect_test "builtins" =
          name = "x"; def = (TyRef (Unqualified LocalRef {ref_loc = [1:15-16]; index = 1}))}
     1. TypeAlias {id_loc = [2:5-6]; name = "T"; tparams = Mono; body = (Annot (String [2:9-15]))} |}]
 
-let%expect_test "builtin_module" =
+let%expect_test "builtin_cjs_module" =
   print_builtins [{|
     type T = string;
     declare module foo {
@@ -4158,29 +4670,473 @@ let%expect_test "builtin_module" =
     0. TypeAlias {id_loc = [1:5-6]; name = "T"; tparams = Mono; body = (Annot (String [1:9-15]))}
 
     Builtin module foo:
-    CJSExports {types = {}; type_stars = []; strict = true}
+    [2:0-4:1] CJSModule {type_exports = [||];
+                exports = (Some (TyRef (Unqualified LocalRef {ref_loc = [3:26-27]; index = 0})));
+                info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}} |}]
 
-    Export_def:
-    (TyRef (Unqualified LocalRef {ref_loc = [3:26-27]; index = 0})) |}]
-
-let%expect_test "builtin_module_2" =
+let%expect_test "builtin_cjs_module_unused_type" =
+  (* `T` is not exported because `declare module.exports` means that
+     unused exports must be explicitly exported. *)
   print_builtins [{|
     declare module foo {
+      declare type T = number;
       declare module.exports: string;
-    }
-    declare module bar {
-      declare module.exports: number;
     }
   |}];
   [%expect {|
-    Builtin module bar:
-    CJSExports {types = {}; type_stars = []; strict = true}
+    Builtin module foo:
+    [1:0-4:1] CJSModule {type_exports = [||];
+                exports = (Some (Annot (String [3:26-32])));
+                info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}} |}]
 
-    Export_def:
-    (Annot (Number [5:26-32]))
+let%expect_test "builtin_cjs_module_unused_type_exported" =
+  (* T is exported because it has an `export` keyword *)
+  print_builtins [{|
+    declare module foo {
+      declare export type T = number;
+      declare module.exports: string;
+    }
+  |}];
+  [%expect {|
+    Local defs:
+    0. TypeAlias {id_loc = [2:22-23]; name = "T"; tparams = Mono; body = (Annot (Number [2:26-32]))}
 
     Builtin module foo:
-    CJSExports {types = {}; type_stars = []; strict = true}
+    [1:0-4:1] CJSModule {type_exports = [|(ExportTypeBinding 0)|];
+                exports = (Some (Annot (String [3:26-32])));
+                info = CJSModuleInfo {type_export_keys = [|"T"|]; type_stars = []; strict = true}} |}]
 
-    Export_def:
-    (Annot (String [2:26-32])) |}]
+let%expect_test "builtin_cjs_module_used_type" =
+  (* T is included because it is reachable, but not a named export because it does not
+     have an `export` keyword *)
+  print_builtins [{|
+    declare module foo {
+      declare type T = number;
+      declare module.exports: T;
+    }
+  |}];
+  [%expect {|
+    Local defs:
+    0. TypeAlias {id_loc = [2:15-16]; name = "T"; tparams = Mono; body = (Annot (Number [2:19-25]))}
+
+    Builtin module foo:
+    [1:0-4:1] CJSModule {type_exports = [||];
+                exports = (Some (TyRef (Unqualified LocalRef {ref_loc = [3:26-27]; index = 0})));
+                info = CJSModuleInfo {type_export_keys = [||]; type_stars = []; strict = true}} |}]
+
+let%expect_test "builtin_cjs_module_used_type_exported" =
+  (* `T` is exported because it has an `export` keyword, and is also reachable via the default export *)
+  print_builtins [{|
+    declare module foo {
+      declare export type T = number;
+      declare module.exports: T;
+    }
+  |}];
+  [%expect {|
+    Local defs:
+    0. TypeAlias {id_loc = [2:22-23]; name = "T"; tparams = Mono; body = (Annot (Number [2:26-32]))}
+
+    Builtin module foo:
+    [1:0-4:1] CJSModule {type_exports = [|(ExportTypeBinding 0)|];
+                exports = (Some (TyRef (Unqualified LocalRef {ref_loc = [3:26-27]; index = 0})));
+                info = CJSModuleInfo {type_export_keys = [|"T"|]; type_stars = []; strict = true}} |}]
+
+let%expect_test "builtin_cjs_module_with_implicit_exports" =
+  (* when a `declare module` doesn't have explicit value exports via `declare export` (which
+     makes it an ES module) or `declare module.exports = ...` (which makes it a CJS module),
+     it is implicitly a CJS module where all values are exported.
+
+     types are always exported in CJS modules, and require the `export` keyword in ES modules.
+     NOTE: `declare export type` does not an ES module make!
+
+     so in this test:
+      - there are no explicitly exported values, so everything is implicitly exported
+      - explicitly exporting type U does not hide T; T is also exported *)
+  print_builtins [{|
+    declare module foo {
+      declare var x: string;
+      declare function f(): void;
+      declare class Y {}
+      declare type T = number;
+      declare export type U = string;
+    }
+  |}];
+  [%expect {|
+    Local defs:
+    0. Variable {id_loc = [2:14-15]; name = "x"; def = (Annot (String [2:17-23]))}
+    1. DeclareFun {id_loc = [3:19-20];
+         name = "f"; fn_loc = [3:20-28];
+         def =
+         FunSig {tparams = Mono; params = [];
+           rest_param = None; this_param = None;
+           return = (Annot (Void [3:24-28]));
+           predicate = None};
+         tail = []}
+    2. DeclareClassBinding {id_loc = [4:16-17];
+         name = "Y";
+         def =
+         DeclareClassSig {tparams = Mono;
+           extends = ClassImplicitExtends;
+           mixins = []; implements = [];
+           static_props = {}; own_props = {};
+           proto_props = {}; static_calls = [];
+           calls = []}}
+    3. TypeAlias {id_loc = [5:15-16]; name = "T"; tparams = Mono; body = (Annot (Number [5:19-25]))}
+    4. TypeAlias {id_loc = [6:22-23]; name = "U"; tparams = Mono; body = (Annot (String [6:26-32]))}
+
+    Builtin module foo:
+    [1:0-7:1] CJSModule {type_exports = [|(ExportTypeBinding 3); (ExportTypeBinding 4)|];
+                exports =
+                (Some (Value
+                         ObjLit {loc = [1:0-7:1];
+                           frozen = true;
+                           proto = None;
+                           props =
+                           { "Y" ->
+                             (ObjValueField ([1:0-7:1],
+                                (Ref LocalRef {ref_loc = [1:0-7:1]; index = 2}), Polarity.Neutral));
+                             "f" ->
+                             (ObjValueField ([1:0-7:1],
+                                (Ref LocalRef {ref_loc = [1:0-7:1]; index = 1}), Polarity.Neutral));
+                             "x" ->
+                             (ObjValueField ([1:0-7:1],
+                                (Ref LocalRef {ref_loc = [1:0-7:1]; index = 0}), Polarity.Neutral)) }}));
+                info =
+                CJSModuleInfo {type_export_keys = [|"T"; "U"|]; type_stars = []; strict = true}} |}]
+
+let%expect_test "builtin_es_module_default" =
+  print_builtins [{|
+    declare module foo {
+      declare export default string;
+    }
+  |}];
+  [%expect {|
+    Builtin module foo:
+    [1:0-3:1] ESModule {type_exports = [||];
+                exports =
+                [|ExportDefault {default_loc = [2:17-24]; def = (Annot (String [2:25-31]))}|];
+                info =
+                ESModuleInfo {type_export_keys = [||];
+                  type_stars = []; export_keys = [|"default"|];
+                  stars = []; strict = true}} |}]
+
+let%expect_test "builtin_module_import_typeof" =
+  print_builtins [{|
+    declare module foo {
+      declare export var x: string;
+    }
+    declare module bar {
+      import typeof {x} from 'foo';
+      declare export var y: x;
+    }
+  |}];
+  [%expect {|
+    Module refs:
+    0. foo
+
+    Local defs:
+    0. Variable {id_loc = [2:21-22]; name = "x"; def = (Annot (String [2:24-30]))}
+    1. Variable {id_loc = [6:21-22];
+         name = "y"; def = (TyRef (Unqualified RemoteRef {ref_loc = [6:24-25]; index = 0}))}
+
+    Remote refs:
+    0. ImportTypeof {id_loc = [5:17-18]; name = "x"; index = 0; remote = "x"}
+
+    Builtin module bar:
+    [4:0-7:1] ESModule {type_exports = [||];
+                exports = [|(ExportBinding 1)|];
+                info =
+                ESModuleInfo {type_export_keys = [||];
+                  type_stars = []; export_keys = [|"y"|];
+                  stars = []; strict = true}}
+    Builtin module foo:
+    [1:0-3:1] ESModule {type_exports = [||];
+                exports = [|(ExportBinding 0)|];
+                info =
+                ESModuleInfo {type_export_keys = [||];
+                  type_stars = []; export_keys = [|"x"|];
+                  stars = []; strict = true}} |}]
+
+let%expect_test "builtin_toplevel_import" =
+  (* this should be a parse error, but in the meantime, make sure we don't fatal.
+     the `import` gets ignored and the `x` becomes a BuiltinRef. *)
+  print_builtins [{|
+    declare module foo {
+      declare export var x: string;
+    }
+    import typeof {x} from 'foo';
+    declare module bar {
+      declare export var y: x;
+    }
+  |}];
+  [%expect{|
+    Local defs:
+    0. Variable {id_loc = [2:21-22]; name = "x"; def = (Annot (String [2:24-30]))}
+    1. Variable {id_loc = [6:21-22];
+         name = "y"; def = (TyRef (Unqualified BuiltinRef {ref_loc = [6:24-25]; name = "x"}))}
+
+    Builtin module bar:
+    [5:0-7:1] ESModule {type_exports = [||];
+                exports = [|(ExportBinding 1)|];
+                info =
+                ESModuleInfo {type_export_keys = [||];
+                  type_stars = []; export_keys = [|"y"|];
+                  stars = []; strict = true}}
+    Builtin module foo:
+    [1:0-3:1] ESModule {type_exports = [||];
+                exports = [|(ExportBinding 0)|];
+                info =
+                ESModuleInfo {type_export_keys = [||];
+                  type_stars = []; export_keys = [|"x"|];
+                  stars = []; strict = true}} |}]
+
+let%expect_test "builtin_module_export_specifiers" =
+  print_builtins [{|
+    declare module "foo" {
+      declare var x : string;
+      declare var y : string;
+      declare export {x, y};
+    }
+  |}];
+  [%expect {|
+    Local defs:
+    0. Variable {id_loc = [2:14-15]; name = "x"; def = (Annot (String [2:18-24]))}
+    1. Variable {id_loc = [3:14-15]; name = "y"; def = (Annot (String [3:18-24]))}
+
+    Builtin module foo:
+    [1:0-5:1] ESModule {type_exports = [||];
+                exports =
+                [|(ExportRef LocalRef {ref_loc = [4:18-19]; index = 0});
+                  (ExportRef LocalRef {ref_loc = [4:21-22]; index = 1})|];
+                info =
+                ESModuleInfo {type_export_keys = [||];
+                  type_stars = []; export_keys = [|"x"; "y"|];
+                  stars = []; strict = true}} |}]
+
+let%expect_test "this_param_1" =
+  print_sig {|
+    export function foo(this : mixed) : void {}
+  |};
+  [%expect {|
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"foo"|];
+        stars = []; strict = true}}
+
+    Local defs:
+    0. FunBinding {id_loc = [1:16-19];
+         name = "foo"; async = false;
+         generator = false; fn_loc = [1:7-40];
+         def =
+         FunSig {tparams = Mono; params = [];
+           rest_param = None; this_param = (Some (Annot (Mixed [1:27-32])));
+           return = (Annot (Void [1:36-40]));
+           predicate = None};
+         statics = {}} |}]
+
+let%expect_test "this_param_2" =
+  print_sig {|
+    export class A {
+      foo(this : mixed) : void {}
+    }
+  |};
+  [%expect {|
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"A"|];
+        stars = []; strict = true}}
+
+    Local defs:
+    0. ClassBinding {id_loc = [1:13-14];
+         name = "A";
+         def =
+         ClassSig {tparams = Mono; extends = ClassImplicitExtends;
+           implements = []; static_props = {};
+           proto_props =
+           { "foo" ->
+             ObjValueMethod {id_loc = [2:2-5];
+               fn_loc = [2:2-29]; async = false;
+               generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params = []; rest_param = None;
+                 this_param = (Some (Annot (Mixed [2:13-18])));
+                 return = (Annot (Void [2:22-26]));
+                 predicate = None}} };
+           own_props = {}}} |}]
+
+let%expect_test "this_param_3" =
+  print_sig {|
+    declare export function foo(this : mixed) : void;
+  |};
+  [%expect {|
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"foo"|];
+        stars = []; strict = true}}
+
+    Local defs:
+    0. DeclareFun {id_loc = [1:24-27];
+         name = "foo"; fn_loc = [1:27-48];
+         def =
+         FunSig {tparams = Mono; params = [];
+           rest_param = None; this_param = (Some (Annot (Mixed [1:35-40])));
+           return = (Annot (Void [1:44-48]));
+           predicate = None};
+         tail = []} |}]
+
+let%expect_test "this_param_4" =
+  print_sig {|
+    declare export class A {
+      foo(this : mixed) : void;
+    }
+  |};
+  [%expect {|
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 0)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"A"|];
+        stars = []; strict = true}}
+
+    Local defs:
+    0. DeclareClassBinding {id_loc = [1:21-22];
+         name = "A";
+         def =
+         DeclareClassSig {tparams = Mono;
+           extends = ClassImplicitExtends;
+           mixins = []; implements = [];
+           static_props = {}; own_props = {};
+           proto_props =
+           { "foo" ->
+             (InterfaceMethod
+                (([2:2-5], [2:2-26],
+                  FunSig {tparams = Mono;
+                    params = []; rest_param = None;
+                    this_param = (Some (Annot (Mixed [2:13-18])));
+                    return = (Annot (Void [2:22-26]));
+                    predicate = None}),
+                 [])) };
+           static_calls = []; calls = []}} |}]
+
+let%expect_test "this_param_5" =
+  print_sig {|
+    export type Foo = (this : mixed) => void
+  |};
+  [%expect {|
+    CJSModule {type_exports = [|(ExportTypeBinding 0)|];
+      exports = None;
+      info = CJSModuleInfo {type_export_keys = [|"Foo"|]; type_stars = []; strict = true}}
+
+    Local defs:
+    0. TypeAlias {id_loc = [1:12-15];
+         name = "Foo"; tparams = Mono;
+         body =
+         (Annot
+            (FunAnnot ([1:18-40],
+               FunSig {tparams = Mono;
+                 params = []; rest_param = None;
+                 this_param = (Some (Annot (Mixed [1:26-31])));
+                 return = (Annot (Void [1:36-40]));
+                 predicate = None}
+               )))} |}]
+
+let%expect_test "this_param_6" =
+  print_sig {|
+    export type O = { f : (this : mixed) => void, a : number }
+  |};
+  [%expect {|
+    CJSModule {type_exports = [|(ExportTypeBinding 0)|];
+      exports = None;
+      info = CJSModuleInfo {type_export_keys = [|"O"|]; type_stars = []; strict = true}}
+
+    Local defs:
+    0. TypeAlias {id_loc = [1:12-13];
+         name = "O"; tparams = Mono;
+         body =
+         (Annot
+            ObjAnnot {loc = [1:16-58];
+              obj_kind = InexactObj;
+              props =
+              { "a" -> (ObjAnnotField ([1:46-47], (Annot (Number [1:50-56])), Polarity.Neutral));
+                "f" ->
+                (ObjAnnotField ([1:18-19],
+                   (Annot
+                      (FunAnnot ([1:22-44],
+                         FunSig {tparams = Mono;
+                           params = [];
+                           rest_param = None;
+                           this_param = (Some (Annot (Mixed [1:30-35])));
+                           return = (Annot (Void [1:40-44]));
+                           predicate = None}
+                         ))),
+                   Polarity.Neutral)) };
+              proto = ObjAnnotImplicitProto})} |}]
+
+let%expect_test "optional_indexed_access" =
+  print_sig {|
+    export type T = Obj?.['a']['b'];
+  |};
+  [%expect {|
+    CJSModule {type_exports = [|(ExportTypeBinding 0)|];
+      exports = None;
+      info = CJSModuleInfo {type_export_keys = [|"T"|]; type_stars = []; strict = true}}
+
+    Local defs:
+    0. TypeAlias {id_loc = [1:12-13];
+         name = "T"; tparams = Mono;
+         body =
+         (Annot
+            OptionalIndexedAccessResultType {
+              loc = [1:16-31];
+              non_maybe_result =
+              (Annot
+                 ElementType {loc = [1:16-31];
+                   obj =
+                   (Annot
+                      OptionalIndexedAccessNonMaybeType {
+                        loc = [1:16-26];
+                        obj = (TyRef (Unqualified BuiltinRef {ref_loc = [1:16-19]; name = "Obj"}));
+                        index = (Annot (SingletonString ([1:22-25], "a")))});
+                   elem = (Annot (SingletonString ([1:27-30], "b")))});
+              void_loc = [1:16-26]})}
+  |}]
+
+let%expect_test "cjs_export_type_star" =
+  print_sig {|
+    export type * from 'foo';
+    export type * from 'bar';
+  |};
+  [%expect {|
+    CJSModule {type_exports = [||]; exports = None;
+      info =
+      CJSModuleInfo {type_export_keys = [||];
+        type_stars = [([2:12-13], 1); ([1:12-13], 0)];
+        strict = true}}
+
+    Module refs:
+    0. foo
+    1. bar |}]
+
+let%expect_test "es_export_star" =
+  print_sig {|
+    export type * from 'foo';
+    export type * from 'bar';
+    export * from 'baz';
+    export * from 'qux';
+  |};
+  [%expect {|
+    ESModule {type_exports = [||]; exports = [||];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = [([2:12-13], 1); ([1:12-13], 0)];
+        export_keys = [||]; stars = [([4:7-8], 3); ([3:7-8], 2)];
+        strict = true}}
+
+    Module refs:
+    0. foo
+    1. bar
+    2. baz
+    3. qux |}]

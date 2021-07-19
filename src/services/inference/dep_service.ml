@@ -63,7 +63,7 @@ open Utils_js
     (sets of) modules and back that compose to give the dependency graph and the
     dependent graph are useful intermediate data structures.
 
-**)
+ **)
 
 (* produce, given files in fileset:
    (1) a dependent (reverse dependency) map for those files:
@@ -73,7 +73,7 @@ open Utils_js
 
    IMPORTANT!!! The only state this function can read is the resolved requires! If you need this
                 function to read any other state, make sure to update the DirectDependentFilesCache!
- *)
+*)
 let calc_direct_dependents_utils ~reader workers fileset root_fileset =
   let open Module_heaps in
   let root_fileset =
@@ -175,20 +175,20 @@ let calc_direct_dependents ~reader workers ~candidates ~root_files ~root_modules
     (* Get the modules provided by candidate files, the reverse dependency map
        for candidate files, and the subset of candidate files whose resolution
        paths may encounter new or changed modules. *)
-      let%lwt (module_dependents, resolution_path_files) =
-        calc_direct_dependents_utils ~reader workers candidates root_files
-      in
-      (* resolution_path_files, plus files that require root_modules *)
-      let direct_dependents =
-        Modulename.Set.fold
-          (fun m acc ->
-            match Modulename.Map.find_opt m module_dependents with
-            | None -> acc
-            | Some files -> List.fold_left (fun acc f -> FilenameSet.add f acc) acc files)
-          root_modules
-          resolution_path_files
-      in
-      Lwt.return direct_dependents
+    let%lwt (module_dependents, resolution_path_files) =
+      calc_direct_dependents_utils ~reader workers candidates root_files
+    in
+    (* resolution_path_files, plus files that require root_modules *)
+    let direct_dependents =
+      Modulename.Set.fold
+        (fun m acc ->
+          match Modulename.Map.find_opt m module_dependents with
+          | None -> acc
+          | Some files -> List.fold_left (fun acc f -> FilenameSet.add f acc) acc files)
+        root_modules
+        resolution_path_files
+    in
+    Lwt.return direct_dependents
 
 (* Calculate module dependencies. Since this involves a lot of reading from
    shared memory, it is useful to parallelize this process (leading to big
@@ -209,22 +209,16 @@ let implementation_file ~reader ~audit r =
   else
     None
 
-let file_dependencies ~options ~audit ~reader file =
+let file_dependencies ~audit ~reader file =
   let file_sig = Parsing_heaps.Mutator_reader.get_file_sig_unsafe reader file in
   let require_set = File_sig.With_Loc.(require_set file_sig.module_sig) in
   let sig_require_set =
-    match Options.arch options with
-    | Options.Classic -> require_set
-    | Options.TypesFirst { new_signatures = false } ->
-      let sig_file_sig = Parsing_heaps.Mutator_reader.get_sig_file_sig_unsafe reader file in
-      File_sig.With_ALoc.(require_set sig_file_sig.module_sig)
-    | Options.TypesFirst { new_signatures = true } ->
-      let (_, _, mrefs, _, _, _, _) =
-        Parsing_heaps.Mutator_reader.get_type_sig_unsafe reader file
-      in
-      let acc = ref SSet.empty in
-      Type_sig_collections.Module_refs.iter (fun x -> acc := SSet.add x !acc) mrefs;
-      !acc
+    let { Packed_type_sig.Module.module_refs = mrefs; _ } =
+      Parsing_heaps.Mutator_reader.get_type_sig_unsafe reader file
+    in
+    let acc = ref SSet.empty in
+    Type_sig_collections.Module_refs.iter (fun x -> acc := SSet.add x !acc) mrefs;
+    !acc
   in
   let { Module_heaps.resolved_modules; _ } =
     Module_heaps.Mutator_reader.get_resolved_requires_unsafe ~reader ~audit file
@@ -242,46 +236,28 @@ let file_dependencies ~options ~audit ~reader file =
     require_set
     (FilenameSet.empty, FilenameSet.empty)
 
-let dependency_info_of_dependency_graph = function
-  | Partial_dependency_graph.PartialClassicDepGraph map -> Dependency_info.of_classic_map map
-  | Partial_dependency_graph.PartialTypesFirstDepGraph map -> Dependency_info.of_types_first_map map
-
 (* Calculates the dependency graph as a map from files to their dependencies.
  * Dependencies not in parsed are ignored. *)
-let calc_partial_dependency_graph ~options ~reader workers files ~parsed =
+let calc_partial_dependency_graph ~reader workers files ~parsed =
   let%lwt dependency_graph =
     MultiWorkerLwt.call
       workers
       ~job:
         (List.fold_left (fun dependency_info file ->
-             let dependencies =
-               match file with
-               | File_key.JsonFile _ -> (FilenameSet.empty, FilenameSet.empty)
-               | _ -> file_dependencies ~options ~audit:Expensive.ok ~reader file
-             in
+             let dependencies = file_dependencies ~audit:Expensive.ok ~reader file in
              FilenameMap.add file dependencies dependency_info))
       ~neutral:FilenameMap.empty
       ~merge:FilenameMap.union
       ~next:(MultiWorkerLwt.next workers (FilenameSet.elements files))
   in
   let dependency_graph =
-    match Options.arch options with
-    | Options.Classic ->
-      Partial_dependency_graph.PartialClassicDepGraph
-        (FilenameMap.map
-           (fun (_sig_files, all_files) -> FilenameSet.inter parsed all_files)
-           dependency_graph)
-    | Options.TypesFirst _ ->
-      Partial_dependency_graph.PartialTypesFirstDepGraph
-        (FilenameMap.map
-           (fun (sig_files, all_files) ->
-             (FilenameSet.inter parsed sig_files, FilenameSet.inter parsed all_files))
-           dependency_graph)
+    FilenameMap.map
+      (fun (sig_files, all_files) ->
+        (FilenameSet.inter parsed sig_files, FilenameSet.inter parsed all_files))
+      dependency_graph
   in
   Lwt.return dependency_graph
 
-let calc_dependency_info ~options ~reader workers ~parsed =
-  let%lwt dependency_graph =
-    calc_partial_dependency_graph ~options ~reader workers parsed ~parsed
-  in
-  Lwt.return (dependency_info_of_dependency_graph dependency_graph)
+let calc_dependency_info ~reader workers ~parsed =
+  let%lwt dependency_graph = calc_partial_dependency_graph ~reader workers parsed ~parsed in
+  Lwt.return (Dependency_info.of_map dependency_graph)

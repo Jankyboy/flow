@@ -13,14 +13,14 @@ References:
    Suspense.js:7:1
     7| function Loading() {
        ^^^^^^^^^^^^^^^^^^ [1]
-   <BUILTINS>/react.js:18:5
-   18|   | React$Element<any>
-           ^^^^^^^^^^^^^^^^^^ [2]
-   <BUILTINS>/react.js:19:5
-   19|   | React$Portal
-           ^^^^^^^^^^^^ [3]
    <BUILTINS>/react.js:20:5
-   20|   | Iterable<?React$Node>;
+   20|   | React$Element<any>
+           ^^^^^^^^^^^^^^^^^^ [2]
+   <BUILTINS>/react.js:21:5
+   21|   | React$Portal
+           ^^^^^^^^^^^^ [3]
+   <BUILTINS>/react.js:22:5
+   22|   | Iterable<?React$Node>;
            ^^^^^^^^^^^^^^^^^^^^^ [4]
 
 
@@ -37,8 +37,8 @@ References:
    lazy.js:6:1
      6| function FunctionComponent(x: Props): React.Node { return null }
         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ [1]
-   <BUILTINS>/react.js:315:22
-   315|     component: () => Promise<{ default: React$AbstractComponent<Config, Instance>, ... }>,
+   <BUILTINS>/react.js:335:22
+   335|     component: () => Promise<{ default: React$AbstractComponent<Config, Instance>, ... }>,
                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ [2]
 
 
@@ -55,8 +55,8 @@ References:
    lazy.js:7:7
      7| class ClassComponent extends React.Component<Props> {}
               ^^^^^^^^^^^^^^ [1]
-   <BUILTINS>/react.js:315:22
-   315|     component: () => Promise<{ default: React$AbstractComponent<Config, Instance>, ... }>,
+   <BUILTINS>/react.js:335:22
+   335|     component: () => Promise<{ default: React$AbstractComponent<Config, Instance>, ... }>,
                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ [2]
 
 
@@ -66,19 +66,19 @@ Cannot call `React.lazy` with function bound to `component` because property `de
 exists in object type [2] in type argument `R` [3] of the return value. [prop-missing]
 
    lazy.js:11:34
-    11| React.lazy(() => Promise.resolve(FunctionComponent)); // Error property default is missing
-                                         ^^^^^^^^^^^^^^^^^
+     11| React.lazy(() => Promise.resolve(FunctionComponent)); // Error property default is missing
+                                          ^^^^^^^^^^^^^^^^^
 
 References:
    lazy.js:6:1
-     6| function FunctionComponent(x: Props): React.Node { return null }
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ [1]
-   <BUILTINS>/react.js:315:30
-   315|     component: () => Promise<{ default: React$AbstractComponent<Config, Instance>, ... }>,
-                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ [2]
-   <BUILTINS>/core.js:682:24
-   682| declare class Promise<+R> {
-                               ^ [3]
+      6| function FunctionComponent(x: Props): React.Node { return null }
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ [1]
+   <BUILTINS>/react.js:335:30
+    335|     component: () => Promise<{ default: React$AbstractComponent<Config, Instance>, ... }>,
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ [2]
+   <BUILTINS>/core.js:1809:24
+   1809| declare class Promise<+R> {
+                                ^ [3]
 
 
 Error ---------------------------------------------------------------------------------------------------- lazy.js:12:34
@@ -87,19 +87,19 @@ Cannot call `React.lazy` with function bound to `component` because property `de
 `ClassComponent` [1] but exists in object type [2] in type argument `R` [3] of the return value. [prop-missing]
 
    lazy.js:12:34
-    12| React.lazy(() => Promise.resolve(ClassComponent)); // Error property default is missing
-                                         ^^^^^^^^^^^^^^
+     12| React.lazy(() => Promise.resolve(ClassComponent)); // Error property default is missing
+                                          ^^^^^^^^^^^^^^
 
 References:
    lazy.js:7:7
-     7| class ClassComponent extends React.Component<Props> {}
-              ^^^^^^^^^^^^^^ [1]
-   <BUILTINS>/react.js:315:30
-   315|     component: () => Promise<{ default: React$AbstractComponent<Config, Instance>, ... }>,
-                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ [2]
-   <BUILTINS>/core.js:682:24
-   682| declare class Promise<+R> {
-                               ^ [3]
+      7| class ClassComponent extends React.Component<Props> {}
+               ^^^^^^^^^^^^^^ [1]
+   <BUILTINS>/react.js:335:30
+    335|     component: () => Promise<{ default: React$AbstractComponent<Config, Instance>, ... }>,
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ [2]
+   <BUILTINS>/core.js:1809:24
+   1809| declare class Promise<+R> {
+                                ^ [3]
 
 
 Error ---------------------------------------------------------------------------------------------------- lazy.js:19:13

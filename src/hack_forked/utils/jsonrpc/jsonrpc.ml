@@ -159,12 +159,14 @@ let internal_run_daemon' (oc : queue_message Daemon.out_channel) : unit =
             let timestamped_json = internal_read_message reader in
             Queue.push timestamped_json messages_to_send;
             true
-          with e ->
-            let message = Printexc.to_string e in
-            let stack = Printexc.get_backtrace () in
+          with
+          | exn ->
+            let e = Exception.wrap exn in
+            let message = Exception.get_ctor_string e in
+            let stack = Exception.get_full_backtrace_string 500 e in
             let edata = { Marshal_tools.message; stack } in
             let (should_continue, marshal) =
-              match e with
+              match exn with
               | Hh_json.Syntax_error _ -> (true, Recoverable_exception edata)
               | _ -> (false, Fatal_exception edata)
             in
@@ -185,21 +187,23 @@ let internal_run_daemon' (oc : queue_message Daemon.out_channel) : unit =
 
 (*  Main function for the daemon process. *)
 let internal_run_daemon (_dummy_param : unit) (_ic, (oc : queue_message Daemon.out_channel)) =
-  Printexc.record_backtrace true;
-  try internal_run_daemon' oc
-  with e ->
+  Exception.record_backtrace true;
+  try internal_run_daemon' oc with
+  | exn ->
     (* An exception that's gotten here is not simply a parse error, but
        something else, so we should terminate the daemon at this point. *)
-    let message = Printexc.to_string e in
-    let stack = Printexc.get_backtrace () in
+    let e = Exception.wrap exn in
+    let message = Exception.get_ctor_string e in
+    let stack = Exception.get_full_backtrace_string 500 e in
     (try
        let out_fd = Daemon.descr_of_out_channel oc in
        Marshal_tools.to_fd_with_preamble out_fd (Fatal_exception { Marshal_tools.message; stack })
        |> ignore
-     with _ ->
-       (* There may be a broken pipe, for example. We should just give up on
+     with
+    | _ ->
+      (* There may be a broken pipe, for example. We should just give up on
          reporting the error. *)
-       ())
+      ())
 
 let internal_entry_point : (unit, unit, queue_message) Daemon.entry =
   Daemon.register_entry_point "Jsonrpc" internal_run_daemon
@@ -213,8 +217,8 @@ let make_queue () : queue =
     Daemon.spawn
       ~channel_mode:`pipe
       (* We don't technically need to inherit stdout or stderr, but this might be
-       useful in the event that we throw an unexpected exception in the daemon.
-       It's also useful for print-statement debugging of the daemon. *)
+         useful in the event that we throw an unexpected exception in the daemon.
+         It's also useful for print-statement debugging of the daemon. *)
       (Unix.stdin, Unix.stdout, Unix.stderr)
       internal_entry_point
       ()
@@ -233,11 +237,13 @@ let read_single_message_into_queue_wait (message_queue : queue) : queue_message 
           (Lwt_unix.of_unix_file_descr message_queue.daemon_in_fd)
       in
       Lwt.return message
-    with End_of_file as e ->
+    with
+    | End_of_file as e ->
       (* This is different from when the client hangs up. It handles the case
          that the daemon process exited: for example, if it was killed. *)
-      let message = Printexc.to_string e in
-      let stack = Printexc.get_backtrace () in
+      let e = Exception.wrap e in
+      let message = Exception.get_ctor_string e in
+      let stack = Exception.get_full_backtrace_string 500 e in
       Lwt.return (Fatal_exception { Marshal_tools.message; stack })
   in
   Queue.push message message_queue.messages;
@@ -249,16 +255,16 @@ let rec read_messages_into_queue_no_wait (message_queue : queue) : unit Lwt.t =
     if is_readable then
       (* We're expecting this not to block because we just checked
          to make sure that there's something there. *)
-        let%lwt message = read_single_message_into_queue_wait message_queue in
-        (* Now read any more messages that might be queued up. Only try to read more
+      let%lwt message = read_single_message_into_queue_wait message_queue in
+      (* Now read any more messages that might be queued up. Only try to read more
          messages if the daemon is still available to read from. Otherwise, we may
          infinite loop as a result of `Unix.select` returning that a file
          descriptor is available to read on. *)
-        match message with
-        | Fatal_exception _ -> Lwt.return_unit
-        | _ ->
-          let%lwt () = read_messages_into_queue_no_wait message_queue in
-          Lwt.return_unit
+      match message with
+      | Fatal_exception _ -> Lwt.return_unit
+      | _ ->
+        let%lwt () = read_messages_into_queue_no_wait message_queue in
+        Lwt.return_unit
     else
       Lwt.return_unit
   in
@@ -312,16 +318,16 @@ let respond
     in
     let response =
       JSON_Object
-        ( [("jsonrpc", JSON_String "2.0")]
+        ([("jsonrpc", JSON_String "2.0")]
         @ [("id", Base.Option.value in_response_to.id ~default:JSON_Null)]
-        @ ( if is_error then
+        @ (if is_error then
             [("error", result_or_error)]
           else
-            [("result", result_or_error)] )
+            [("result", result_or_error)])
         @
         match powered_by with
         | Some powered_by -> [("powered_by", JSON_String powered_by)]
-        | None -> [] )
+        | None -> [])
     in
     last_sent_ref := Some response;
     writer response)
@@ -333,11 +339,11 @@ let notify
   Hh_json.(
     let message =
       JSON_Object
-        ( [("jsonrpc", JSON_String "2.0"); ("method", JSON_String method_); ("params", params)]
+        ([("jsonrpc", JSON_String "2.0"); ("method", JSON_String method_); ("params", params)]
         @
         match powered_by with
         | Some powered_by -> [("powered_by", JSON_String powered_by)]
-        | None -> [] )
+        | None -> [])
     in
     last_sent_ref := Some message;
     writer message)

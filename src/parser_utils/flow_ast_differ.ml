@@ -18,8 +18,11 @@ type 'a change' =
       leading_separator: bool;
     }
   | Delete of 'a
+[@@deriving show]
 
-type 'a change = Loc.t * 'a change'
+type 'a change = Loc.t * 'a change' [@@deriving show]
+
+type 'a changes = 'a change list [@@deriving show]
 
 type diff_algorithm =
   | Trivial
@@ -50,15 +53,17 @@ let change_compare (pos1, chg1) (pos2, chg2) =
 let trivial_list_diff (old_list : 'a list) (new_list : 'a list) : 'a diff_result list option =
   (* inspect the lists pairwise and record any items which are different as replacements. Give up if
    * the lists have different lengths.*)
-  let rec helper i lst1 lst2 =
+  let rec helper acc i lst1 lst2 =
     match (lst1, lst2) with
-    | ([], []) -> Some []
+    | ([], []) -> Some (List.rev acc)
     | (hd1 :: tl1, hd2 :: tl2) ->
-      let rest = helper (i + 1) tl1 tl2 in
-      if hd1 != hd2 then
-        Base.Option.map rest ~f:(List.cons (i, Replace (hd1, hd2)))
-      else
-        rest
+      let acc =
+        if hd1 != hd2 then
+          (i, Replace (hd1, hd2)) :: acc
+        else
+          acc
+      in
+      (helper [@tailcall]) acc (i + 1) tl1 tl2
     | (_, [])
     | ([], _) ->
       None
@@ -66,7 +71,7 @@ let trivial_list_diff (old_list : 'a list) (new_list : 'a list) : 'a diff_result
   if old_list == new_list then
     Some []
   else
-    helper 0 old_list new_list
+    helper [] 0 old_list new_list
 
 (* diffs based on http://www.xmailserver.org/diff2.pdf on page 6 *)
 let standard_list_diff (old_list : 'a list) (new_list : 'a list) : 'a diff_result list option =
@@ -99,7 +104,7 @@ let standard_list_diff (old_list : 'a list) (new_list : 'a list) : 'a diff_resul
             let (x_old, y_old, advance_in_old_list) = follow_snake (x + 1) y trace in
             let (x_new, y_new, advance_in_new_list) = follow_snake x (y + 1) trace in
             (* if we have already visited this location, there is a shorter path to it, so we don't
-           store this trace *)
+               store this trace *)
             let () =
               if Hashtbl.mem visited (x_old, y_old) |> not then
                 let () = Queue.add (x_old, y_old) new_frontier in
@@ -138,7 +143,7 @@ let standard_list_diff (old_list : 'a list) (new_list : 'a list) : 'a diff_resul
         script
       else
         (* The algorithm treats the trace as though (-1,-1) were the (-1)th match point
-         in the list and (n,m) were the (len+1)th *)
+           in the list and (n,m) were the (len+1)th *)
         let first =
           if k = -1 then
             0
@@ -180,8 +185,8 @@ let standard_list_diff (old_list : 'a list) (new_list : 'a list) : 'a diff_resul
         (* We are only removing the first element of the insertion. We make sure to indicate
            that the rest of the insert should have a leading separator between it and the replace. *)
         (i2, Replace (y, x))
-        :: convert_to_replace
-             ((i2, Insert { items = rst; separator; leading_separator = true }) :: t)
+        ::
+        convert_to_replace ((i2, Insert { items = rst; separator; leading_separator = true }) :: t)
       | h :: t -> h :: convert_to_replace t
     in
     (* Deletes are added for every element of old_list that does not have a
@@ -204,6 +209,13 @@ let list_diff = function
   | Trivial -> trivial_list_diff
   | Standard -> standard_list_diff
 
+type expression_node_parent =
+  | StatementParent of (Loc.t, Loc.t) Flow_ast.Statement.t
+  | ExpressionParent of (Loc.t, Loc.t) Flow_ast.Expression.t
+  | SlotParent (* Any slot that does not require expression to be parenthesized. *)
+  | SpreadParent
+[@@deriving show]
+
 (* We need a variant here for every node that we want to be able to store a diff for. The more we
  * have here, the more granularly we can diff. *)
 type node =
@@ -216,7 +228,7 @@ type node =
   | BooleanLiteral of Loc.t * Loc.t Ast.BooleanLiteral.t
   | Statement of (Loc.t, Loc.t) Ast.Statement.t
   | Program of (Loc.t, Loc.t) Ast.Program.t
-  | Expression of (Loc.t, Loc.t) Ast.Expression.t
+  | Expression of ((Loc.t, Loc.t) Ast.Expression.t * expression_node_parent)
   | Pattern of (Loc.t, Loc.t) Ast.Pattern.t
   | Params of (Loc.t, Loc.t) Ast.Function.Params.t
   | Variance of Loc.t Ast.Variance.t
@@ -229,6 +241,7 @@ type node =
   | TemplateLiteral of Loc.t * (Loc.t, Loc.t) Ast.Expression.TemplateLiteral.t
   | JSXChild of (Loc.t, Loc.t) Ast.JSX.child
   | JSXIdentifier of (Loc.t, Loc.t) Ast.JSX.Identifier.t
+[@@deriving show]
 
 let expand_loc_with_comments loc node =
   let open Comment_attachment in
@@ -249,10 +262,10 @@ let expand_loc_with_comments loc node =
     | BooleanLiteral (loc, lit) ->
       bounds (loc, lit) (fun collect (loc, lit) -> collect#boolean_literal_type loc lit)
     | Statement stmt -> bounds stmt (fun collect stmt -> collect#statement stmt)
-    | Expression expr -> bounds expr (fun collect expr -> collect#expression expr)
+    | Expression (expr, _) -> bounds expr (fun collect expr -> collect#expression expr)
     | Pattern pat -> bounds pat (fun collect pat -> collect#pattern pat)
     | Params params -> bounds params (fun collect params -> collect#function_params params)
-    | Variance var -> bounds var (fun collect var -> collect#variance (Some var))
+    | Variance var -> bounds var (fun collect var -> collect#variance var)
     | Type ty -> bounds ty (fun collect ty -> collect#type_ ty)
     | TypeParam tparam -> bounds tparam (fun collect tparam -> collect#type_param tparam)
     | TypeAnnotation annot
@@ -333,7 +346,7 @@ let _diff_if_changed_opt_arg f opt1 opt2 : node change list option =
   | _ -> f opt1 opt2
 
 (* This is needed if the function for the given node returns a node change
-* list instead of a node change list option (for instance, expression) *)
+ * list instead of a node change list option (for instance, expression) *)
 let diff_if_changed_nonopt_fn f opt1 opt2 : node change list option =
   match (opt1, opt2) with
   | (Some x1, Some x2) ->
@@ -395,24 +408,24 @@ let partition_imports (stmts : (Loc.t, Loc.t) Ast.Statement.t list) =
   partition_import_helper stmts ([], [])
 
 (* Outline:
-* - There is a function for every AST node that we want to be able to recurse into.
-* - Each function for an AST node represented in the `node` type above should return a list of
-*   changes.
-*   - If it cannot compute a more granular diff, it should return a list with a single element,
-*     which records the replacement of `old_node` with `new_node` (where `old_node` and
-*     `new_node` are the arguments passed to that function)
-* - Every other function should do the same, except if it is unable to return a granular diff, it
-*   should return `None` to indicate that its parent must be recorded as a replacement. This is
-*   because there is no way to record a replacement for a node which does not appear in the
-*   `node` type above.
-* - We can add additional functions as needed to improve the granularity of the diffs.
-* - We could eventually reach a point where no function would ever fail to generate a diff. That
-*   would require us to implement a function here for every AST node, and add a variant to the
-*   `node` type for every AST node as well. It would also likely require some tweaks to the AST.
-*   For example, a function return type is optional. If it is None, it has no location attached.
-*   What would we do if the original tree had no annotation, but the new tree did have one? We
-*   would not know what Loc.t to give to the insertion.
-*)
+ * - There is a function for every AST node that we want to be able to recurse into.
+ * - Each function for an AST node represented in the `node` type above should return a list of
+ *   changes.
+ *   - If it cannot compute a more granular diff, it should return a list with a single element,
+ *     which records the replacement of `old_node` with `new_node` (where `old_node` and
+ *     `new_node` are the arguments passed to that function)
+ * - Every other function should do the same, except if it is unable to return a granular diff, it
+ *   should return `None` to indicate that its parent must be recorded as a replacement. This is
+ *   because there is no way to record a replacement for a node which does not appear in the
+ *   `node` type above.
+ * - We can add additional functions as needed to improve the granularity of the diffs.
+ * - We could eventually reach a point where no function would ever fail to generate a diff. That
+ *   would require us to implement a function here for every AST node, and add a variant to the
+ *   `node` type for every AST node as well. It would also likely require some tweaks to the AST.
+ *   For example, a function return type is optional. If it is None, it has no location attached.
+ *   What would we do if the original tree had no annotation, but the new tree did have one? We
+ *   would not know what Loc.t to give to the insertion.
+ *)
 (* Entry point *)
 let program
     (algo : diff_algorithm)
@@ -440,35 +453,33 @@ let program
       (old_list : a list)
       (index_offset : int)
       (diffs : a diff_result list) : b change list option =
-    Base.Option.(
-      let recurse_into_change = function
-        | (_, Replace (x1, x2)) -> f x1 x2
-        | (index, Insert { items = lst; separator; leading_separator }) ->
-          let index = index + index_offset in
-          let loc =
-            if List.length old_list = 0 then
-              None
-            else if
-              (* To insert at the start of the list, insert before the first element *)
-              index = -1
-            then
-              List.hd old_list |> trivial >>| fst >>| Loc.start_loc
+    let open Base.Option in
+    let recurse_into_change = function
+      | (_, Replace (x1, x2)) -> f x1 x2
+      | (index, Insert { items = lst; separator; leading_separator }) ->
+        let index = index + index_offset in
+        let loc =
+          if List.length old_list = 0 then
+            None
+          else if index = -1 then
+            (* To insert at the start of the list, insert before the first element *)
+            List.hd old_list |> trivial >>| fst >>| Loc.start_loc
+          else
             (* Otherwise insert it after the current element *)
-            else
-              List.nth old_list index |> trivial >>| fst >>| Loc.end_loc
-          in
-          Base.List.map ~f:trivial lst
-          |> all
-          >>| Base.List.map ~f:snd (* drop the loc *)
-          >>| (fun x -> Insert { items = x; separator; leading_separator })
-          |> both loc
-          >>| Base.List.return
-        | (_, Delete x) -> trivial x >>| (fun (loc, y) -> (loc, Delete y)) >>| Base.List.return
-      in
-      let recurse_into_changes =
-        Base.List.map ~f:recurse_into_change %> all %> map ~f:Base.List.concat
-      in
-      recurse_into_changes diffs)
+            List.nth old_list index |> trivial >>| fst >>| Loc.end_loc
+        in
+        Base.List.map ~f:trivial lst
+        |> all
+        >>| Base.List.map ~f:snd (* drop the loc *)
+        >>| (fun x -> Insert { items = x; separator; leading_separator })
+        |> both loc
+        >>| Base.List.return
+      | (_, Delete x) -> trivial x >>| (fun (loc, y) -> (loc, Delete y)) >>| Base.List.return
+    in
+    let recurse_into_changes =
+      Base.List.map ~f:recurse_into_change %> all %> map ~f:Base.List.concat
+    in
+    recurse_into_changes diffs
   in
   (* Runs `list_diff` and then recurses into replacements (using `f`) to get more granular diffs.
      For inserts and deletes, it uses `trivial` to produce a Loc.t and a b for the change *)
@@ -489,8 +500,11 @@ let program
   let diff_and_recurse_nonopt_no_trivial f = diff_and_recurse_nonopt f (fun _ -> None) in
   let join_diff_list = Some [] |> List.fold_left (Base.Option.map2 ~f:List.append) in
   let rec syntax_opt
-            : 'internal. Loc.t -> (Loc.t, 'internal) Ast.Syntax.t option ->
-              (Loc.t, 'internal) Ast.Syntax.t option -> node change list option =
+            : 'internal.
+              Loc.t ->
+              (Loc.t, 'internal) Ast.Syntax.t option ->
+              (Loc.t, 'internal) Ast.Syntax.t option ->
+              node change list option =
    fun loc s1 s2 ->
     let add_comments { Ast.Syntax.leading; trailing; internal = _ } =
       Loc.(
@@ -511,7 +525,9 @@ let program
     in
     diff_or_add_opt syntax add_comments s1 s2
   and syntax
-        : 'internal. (Loc.t, 'internal) Ast.Syntax.t -> (Loc.t, 'internal) Ast.Syntax.t ->
+        : 'internal.
+          (Loc.t, 'internal) Ast.Syntax.t ->
+          (Loc.t, 'internal) Ast.Syntax.t ->
           node change list option =
    fun s1 s2 ->
     let { Ast.Syntax.leading = leading1; trailing = trailing1; internal = _ } = s1 in
@@ -581,11 +597,11 @@ let program
               0
         >>= fun import_recurse ->
         body_diff
-        >>= ( List.length imports1
+        >>= (List.length imports1
             |> recurse_into_diff
                  (fun x y -> Some (statement x y))
                  (fun s -> Some (expand_statement_comment_bounds s, Statement s))
-                 stmts1 )
+                 stmts1)
         >>| fun body_recurse -> import_recurse @ body_recurse)
   and statement_list
       (stmts1 : (Loc.t, Loc.t) Ast.Statement.t list) (stmts2 : (Loc.t, Loc.t) Ast.Statement.t list)
@@ -644,6 +660,8 @@ let program
         declare_function loc func1 func2
       | ((loc, DeclareVariable decl1), (_, DeclareVariable decl2)) ->
         declare_variable loc decl1 decl2
+      | ((loc, EnumDeclaration enum1), (_, EnumDeclaration enum2)) ->
+        enum_declaration loc enum1 enum2
       | ((loc, Empty empty1), (_, Empty empty2)) -> empty_statement loc empty1 empty2
       | (_, _) -> None
     in
@@ -655,7 +673,7 @@ let program
       declaration = decl1;
       specifiers = specs1;
       source = src1;
-      exportKind = kind1;
+      export_kind = kind1;
       comments = comments1;
     } =
       export1
@@ -664,7 +682,7 @@ let program
       declaration = decl2;
       specifiers = specs2;
       source = src2;
-      exportKind = kind2;
+      export_kind = kind2;
       comments = comments2;
     } =
       export2
@@ -692,7 +710,11 @@ let program
         | (Declaration s1, Declaration s2) -> statement s1 s2 |> Base.Option.return
         | ( Ast.Statement.ExportDefaultDeclaration.Expression e1,
             Ast.Statement.ExportDefaultDeclaration.Expression e2 ) ->
-          expression e1 e2 |> Base.Option.return
+          expression
+            ~parent:(StatementParent (loc, Ast.Statement.ExportDefaultDeclaration export2))
+            e1
+            e2
+          |> Base.Option.return
         | _ -> None
       in
       let comments_diff = syntax_opt loc comments1 comments2 in
@@ -784,7 +806,7 @@ let program
       (import2 : (Loc.t, Loc.t) Ast.Statement.ImportDeclaration.t) : node change list option =
     let open Ast.Statement.ImportDeclaration in
     let {
-      importKind = imprt_knd1;
+      import_kind = imprt_knd1;
       source = src1;
       default = dflt1;
       specifiers = spec1;
@@ -793,7 +815,7 @@ let program
       import1
     in
     let {
-      importKind = imprt_knd2;
+      import_kind = imprt_knd2;
       source = src2;
       default = dflt2;
       specifiers = spec2;
@@ -852,8 +874,8 @@ let program
       let params =
         match (is_arrow, params1, params2, params) with
         | ( true,
-            (l, { Params.params = [_p1]; rest = None; comments = _ }),
-            (_, { Params.params = [_p2]; rest = None; comments = _ }),
+            (l, { Params.params = [_p1]; rest = None; this_ = None; comments = _ }),
+            (_, { Params.params = [_p2]; rest = None; this_ = None; comments = _ }),
             Some [_] ) ->
           (* reprint the parameter if it's the single parameter of a lambda to add () *)
           Some [replace l (Params params1) (Params params2)]
@@ -867,26 +889,39 @@ let program
       (params1 : (Loc.t, Loc.t) Ast.Function.Params.t)
       (params2 : (Loc.t, Loc.t) Ast.Function.Params.t) : node change list option =
     let open Ast.Function.Params in
-    let (loc, { params = param_lst1; rest = rest1; comments = comments1 }) = params1 in
-    let (_, { params = param_lst2; rest = rest2; comments = comments2 }) = params2 in
+    let (loc, { params = param_lst1; rest = rest1; this_ = this1; comments = comments1 }) =
+      params1
+    in
+    let (_, { params = param_lst2; rest = rest2; this_ = this2; comments = comments2 }) = params2 in
     let params_diff = diff_and_recurse_no_trivial function_param param_lst1 param_lst2 in
     let rest_diff = diff_if_changed_opt function_rest_param rest1 rest2 in
+    let this_diff = diff_if_changed_opt function_this_param this1 this2 in
     let comments_diff = syntax_opt loc comments1 comments2 in
-    join_diff_list [params_diff; rest_diff; comments_diff]
+    join_diff_list [params_diff; rest_diff; this_diff; comments_diff]
+  and function_this_param
+      (ftp1 : (Loc.t, Loc.t) Ast.Function.ThisParam.t)
+      (ftp2 : (Loc.t, Loc.t) Ast.Function.ThisParam.t) : node change list option =
+    let open Ast.Function.ThisParam in
+    let (loc, { annot = annot1; comments = comments1 }) = ftp1 in
+    let (_, { annot = annot2; comments = comments2 }) = ftp2 in
+    let annot_diff = Some (diff_if_changed type_annotation annot1 annot2) in
+    let comments_diff = syntax_opt loc comments1 comments2 in
+    join_diff_list [annot_diff; comments_diff]
   and function_param
       (param1 : (Loc.t, Loc.t) Ast.Function.Param.t) (param2 : (Loc.t, Loc.t) Ast.Function.Param.t)
       : node change list option =
     let (_, { Ast.Function.Param.argument = arg1; default = def1 }) = param1 in
     let (_, { Ast.Function.Param.argument = arg2; default = def2 }) = param2 in
     let param_diff = diff_if_changed function_param_pattern arg1 arg2 |> Base.Option.return in
-    let default_diff = diff_if_changed_nonopt_fn expression def1 def2 in
+    let default_diff = diff_if_changed_nonopt_fn (expression ~parent:SlotParent) def1 def2 in
     join_diff_list [param_diff; default_diff]
   and function_body_any
       (body1 : (Loc.t, Loc.t) Ast.Function.body) (body2 : (Loc.t, Loc.t) Ast.Function.body) :
       node change list option =
     let open Ast.Function in
     match (body1, body2) with
-    | (BodyExpression e1, BodyExpression e2) -> expression e1 e2 |> Base.Option.return
+    | (BodyExpression e1, BodyExpression e2) ->
+      expression ~parent:SlotParent e1 e2 |> Base.Option.return
     | (BodyBlock (loc, block1), BodyBlock (_, block2)) -> block loc block1 block2
     | _ -> None
   and variable_declarator
@@ -897,7 +932,7 @@ let program
     let (_, { id = id1; init = init1 }) = decl1 in
     let (_, { id = id2; init = init2 }) = decl2 in
     let id_diff = diff_if_changed pattern id1 id2 |> Base.Option.return in
-    let expr_diff = diff_if_changed_nonopt_fn expression init1 init2 in
+    let expr_diff = diff_if_changed_nonopt_fn (expression ~parent:SlotParent) init1 init2 in
     join_diff_list [id_diff; expr_diff]
   and variable_declaration
       (loc : Loc.t)
@@ -927,7 +962,13 @@ let program
     let { test = test2; consequent = consequent2; alternate = alternate2; comments = comments2 } =
       if2
     in
-    let expr_diff = Some (diff_if_changed expression test1 test2) in
+    let expr_diff =
+      Some
+        (diff_if_changed
+           (expression ~parent:(StatementParent (loc, Ast.Statement.If if2)))
+           test1
+           test2)
+    in
     let cons_diff = Some (diff_if_changed statement consequent1 consequent2) in
     let alt_diff =
       match (alternate1, alternate2) with
@@ -950,7 +991,12 @@ let program
     let open Ast.Statement.With in
     let { _object = _object1; body = body1; comments = comments1 } = with1 in
     let { _object = _object2; body = body2; comments = comments2 } = with2 in
-    let _object_diff = diff_if_changed expression _object1 _object2 in
+    let _object_diff =
+      diff_if_changed
+        (expression ~parent:(StatementParent (loc, Ast.Statement.With with2)))
+        _object1
+        _object2
+    in
     let body_diff = diff_if_changed statement body1 body2 in
     let comments_diff = syntax_opt loc comments1 comments2 |> Base.Option.value ~default:[] in
     List.concat [_object_diff; body_diff; comments_diff]
@@ -998,7 +1044,7 @@ let program
       tparams = tparams1;
       extends = extends1;
       implements = implements1;
-      classDecorators = classDecorators1;
+      class_decorators = class_decorators1;
       comments = comments1;
     } =
       class1
@@ -1009,7 +1055,7 @@ let program
       tparams = tparams2;
       extends = extends2;
       implements = implements2;
-      classDecorators = classDecorators2;
+      class_decorators = class_decorators2;
       comments = comments2;
     } =
       class2
@@ -1022,7 +1068,7 @@ let program
       let implements_diff = diff_if_changed_opt class_implements implements1 implements2 in
       let body_diff = diff_if_changed_ret_opt class_body body1 body2 in
       let decorators_diff =
-        diff_and_recurse_no_trivial class_decorator classDecorators1 classDecorators2
+        diff_and_recurse_no_trivial class_decorator class_decorators1 class_decorators2
       in
       let comments_diff = syntax_opt loc comments1 comments2 in
       join_diff_list
@@ -1033,7 +1079,9 @@ let program
     let open Ast.Class.Extends in
     let { expr = expr1; targs = targs1; comments = comments1 } = extends1 in
     let { expr = expr2; targs = targs2; comments = comments2 } = extends2 in
-    let expr_diff = diff_if_changed expression expr1 expr2 |> Base.Option.return in
+    let expr_diff =
+      diff_if_changed (expression ~parent:SlotParent) expr1 expr2 |> Base.Option.return
+    in
     let targs_diff = diff_if_changed_opt type_args targs1 targs2 in
     let comments_diff = syntax_opt loc comments1 comments2 in
     join_diff_list [expr_diff; targs_diff; comments_diff]
@@ -1102,7 +1150,7 @@ let program
     let open Ast.Class.Decorator in
     let { expression = expression1; comments = comments1 } = dec1 in
     let { expression = expression2; comments = comments2 } = dec2 in
-    let expression_diff = Some (expression expression1 expression2) in
+    let expression_diff = Some (expression ~parent:SlotParent expression1 expression2) in
     let comments_diff = syntax_opt loc comments1 comments2 in
     join_diff_list [expression_diff; comments_diff]
   and class_element
@@ -1138,20 +1186,21 @@ let program
           } ) =
       prop2
     in
-    ( if key1 != key2 || s1 != s2 || var1 != var2 then
+    (if key1 != key2 || s1 != s2 || var1 != var2 then
       None
     else
       let vals = diff_if_changed_ret_opt class_property_value val1 val2 in
       let annots = Some (diff_if_changed type_annotation_hint annot1 annot2) in
       let comments = syntax_opt loc1 comments1 comments2 in
-      join_diff_list [vals; annots; comments] )
+      join_diff_list [vals; annots; comments])
     |> Base.Option.value ~default:[replace loc1 (ClassProperty prop1) (ClassProperty prop2)]
   and class_property_value val1 val2 : node change list option =
     let open Ast.Class.Property in
     match (val1, val2) with
     | (Declared, Declared) -> Some []
     | (Uninitialized, Uninitialized) -> Some []
-    | (Initialized e1, Initialized e2) -> Some (diff_if_changed expression e1 e2)
+    | (Initialized e1, Initialized e2) ->
+      Some (diff_if_changed (expression ~parent:SlotParent) e1 e2)
     | _ -> None
   and class_method
       (loc : Loc.t)
@@ -1210,11 +1259,16 @@ let program
     if dir1 != dir2 then
       None
     else
-      let expression_diff = Some (expression expr1 expr2) in
+      let expression_diff =
+        Some
+          (expression ~parent:(StatementParent (loc, Ast.Statement.Expression stmt2)) expr1 expr2)
+      in
       let comments_diff = syntax_opt loc comments1 comments2 in
       join_diff_list [expression_diff; comments_diff]
-  and expression (expr1 : (Loc.t, Loc.t) Ast.Expression.t) (expr2 : (Loc.t, Loc.t) Ast.Expression.t)
-      : node change list =
+  and expression
+      ~(parent : expression_node_parent)
+      (expr1 : (Loc.t, Loc.t) Ast.Expression.t)
+      (expr2 : (Loc.t, Loc.t) Ast.Expression.t) : node change list =
     let changes =
       (* The open is here to avoid ambiguity with the use of the local `Expression` constructor
        * below *)
@@ -1246,7 +1300,7 @@ let program
       | ((loc, TypeCast t1), (_, TypeCast t2)) -> Some (type_cast loc t1 t2)
       | ((loc, Logical l1), (_, Logical l2)) -> logical loc l1 l2
       | ((loc, Array arr1), (_, Array arr2)) -> array loc arr1 arr2
-      | (expr, (loc, TypeCast t2)) -> Some (type_cast_added expr loc t2)
+      | (expr, (loc, TypeCast t2)) -> Some (type_cast_added parent expr loc t2)
       | ((loc, Update update1), (_, Update update2)) -> update loc update1 update2
       | ((loc, Sequence seq1), (_, Sequence seq2)) -> sequence loc seq1 seq2
       | ((loc, This t1), (_, This t2)) -> this_expression loc t1 t2
@@ -1256,7 +1310,9 @@ let program
       | (_, _) -> None
     in
     let old_loc = Ast_utils.loc_of_expression expr1 in
-    Base.Option.value changes ~default:[replace old_loc (Expression expr1) (Expression expr2)]
+    Base.Option.value
+      changes
+      ~default:[replace old_loc (Expression (expr1, parent)) (Expression (expr2, parent))]
   and literal
       (loc1 : Loc.t) (loc2 : Loc.t) (lit1 : Loc.t Ast.Literal.t) (lit2 : Loc.t Ast.Literal.t) :
       node change list =
@@ -1324,7 +1380,12 @@ let program
     let open Ast.Expression.TaggedTemplate in
     let { tag = tag1; quasi = (quasi_loc1, quasi1); comments = comments1 } = t_tmpl1 in
     let { tag = tag2; quasi = (quasi_loc2, quasi2); comments = comments2 } = t_tmpl2 in
-    let tag_diff = diff_if_changed expression tag1 tag2 in
+    let tag_diff =
+      diff_if_changed
+        (expression ~parent:(ExpressionParent (loc, Ast.Expression.TaggedTemplate t_tmpl2)))
+        tag1
+        tag2
+    in
     let quasi_diff = diff_if_changed (template_literal quasi_loc1 quasi_loc2) quasi1 quasi2 in
     let comments_diff = syntax_opt loc comments1 comments2 |> Base.Option.value ~default:[] in
     Base.List.concat [tag_diff; quasi_diff; comments_diff]
@@ -1338,7 +1399,12 @@ let program
     let { quasis = quasis1; expressions = exprs1; comments = comments1 } = t_lit1 in
     let { quasis = quasis2; expressions = exprs2; comments = comments2 } = t_lit2 in
     let quasis_diff = diff_and_recurse_no_trivial template_literal_element quasis1 quasis2 in
-    let exprs_diff = diff_and_recurse_nonopt_no_trivial expression exprs1 exprs2 in
+    let exprs_diff =
+      diff_and_recurse_nonopt_no_trivial
+        (expression ~parent:(ExpressionParent (loc1, Ast.Expression.TemplateLiteral t_lit2)))
+        exprs1
+        exprs2
+    in
     let comments_diff = syntax_opt loc1 comments1 comments2 in
     let result = join_diff_list [quasis_diff; exprs_diff; comments_diff] in
     Base.Option.value
@@ -1361,16 +1427,16 @@ let program
       (jsx_elem2 : (Loc.t, Loc.t) Ast.JSX.element) : node change list option =
     let open Ast.JSX in
     let {
-      openingElement = open_elem1;
-      closingElement = close_elem1;
+      opening_element = open_elem1;
+      closing_element = close_elem1;
       children = (_, children1);
       comments = comments1;
     } =
       jsx_elem1
     in
     let {
-      openingElement = open_elem2;
-      closingElement = close_elem2;
+      opening_element = open_elem2;
+      closing_element = close_elem2;
       children = (_, children2);
       comments = comments2;
     } =
@@ -1389,17 +1455,17 @@ let program
     (* Opening and closing elements contain no information besides loc, so we
      * ignore them for the diff *)
     let {
-      frag_openingElement = _;
+      frag_opening_element = _;
       frag_children = (_, children1);
-      frag_closingElement = _;
+      frag_closing_element = _;
       frag_comments = frag_comments1;
     } =
       frag1
     in
     let {
-      frag_openingElement = _;
+      frag_opening_element = _;
       frag_children = (_, children2);
-      frag_closingElement = _;
+      frag_closing_element = _;
       frag_comments = frag_comments2;
     } =
       frag2
@@ -1411,15 +1477,15 @@ let program
       (elem1 : (Loc.t, Loc.t) Ast.JSX.Opening.t) (elem2 : (Loc.t, Loc.t) Ast.JSX.Opening.t) :
       node change list option =
     let open Ast.JSX.Opening in
-    let (_, { name = name1; selfClosing = self_close1; attributes = attrs1 }) = elem1 in
-    let (_, { name = name2; selfClosing = self_close2; attributes = attrs2 }) = elem2 in
+    let (_, { name = name1; self_closing = self_close1; attributes = attrs1 }) = elem1 in
+    let (_, { name = name2; self_closing = self_close2; attributes = attrs2 }) = elem2 in
     if self_close1 != self_close2 then
       None
     else
-      let name_diff = diff_if_changed_ret_opt jsx_name name1 name2 in
+      let name_diff = diff_if_changed_ret_opt jsx_element_name name1 name2 in
       let attrs_diff = diff_and_recurse_no_trivial jsx_opening_attribute attrs1 attrs2 in
       join_diff_list [name_diff; attrs_diff]
-  and jsx_name (name1 : (Loc.t, Loc.t) Ast.JSX.name) (name2 : (Loc.t, Loc.t) Ast.JSX.name) :
+  and jsx_element_name (name1 : (Loc.t, Loc.t) Ast.JSX.name) (name2 : (Loc.t, Loc.t) Ast.JSX.name) :
       node change list option =
     let open Ast.JSX in
     match (name1, name2) with
@@ -1475,7 +1541,7 @@ let program
     let open Ast.JSX.Closing in
     let (_, { name = name1 }) = elem1 in
     let (_, { name = name2 }) = elem2 in
-    diff_if_changed_ret_opt jsx_name name1 name2
+    diff_if_changed_ret_opt jsx_element_name name1 name2
   and jsx_opening_attribute
       (jsx_attr1 : (Loc.t, Loc.t) Ast.JSX.Opening.attribute)
       (jsx_attr2 : (Loc.t, Loc.t) Ast.JSX.Opening.attribute) : node change list option =
@@ -1492,7 +1558,7 @@ let program
     let open Flow_ast.JSX.SpreadAttribute in
     let (_, { argument = arg1; comments = comments1 }) = attr1 in
     let (_, { argument = arg2; comments = comments2 }) = attr2 in
-    let argument_diff = Some (diff_if_changed expression arg1 arg2) in
+    let argument_diff = Some (diff_if_changed (expression ~parent:SpreadParent) arg1 arg2) in
     let comments_diff = syntax_opt loc comments1 comments2 in
     join_diff_list [argument_diff; comments_diff]
   and jsx_attribute
@@ -1552,7 +1618,7 @@ let program
     let expression_diff =
       match (expr1, expr2) with
       | (ExpressionContainer.Expression expr1', ExpressionContainer.Expression expr2') ->
-        Some (diff_if_changed expression expr1' expr2')
+        Some (diff_if_changed (expression ~parent:SlotParent) expr1' expr2')
       | (ExpressionContainer.EmptyExpression, ExpressionContainer.EmptyExpression) -> Some []
       | _ -> None
     in
@@ -1564,7 +1630,7 @@ let program
     let open Ast.JSX.SpreadChild in
     let { expression = expr1; comments = comments1 } = jsx_spread_child1 in
     let { expression = expr2; comments = comments2 } = jsx_spread_child2 in
-    let expression_diff = Some (diff_if_changed expression expr1 expr2) in
+    let expression_diff = Some (diff_if_changed (expression ~parent:SpreadParent) expr1 expr2) in
     let comments_diff = syntax_opt loc comments1 comments2 in
     join_diff_list [expression_diff; comments_diff]
   and assignment
@@ -1578,14 +1644,19 @@ let program
       None
     else
       let pat_diff = diff_if_changed pattern pat1 pat2 in
-      let exp_diff = diff_if_changed expression exp1 exp2 in
+      let exp_diff =
+        diff_if_changed
+          (expression ~parent:(ExpressionParent (loc, Ast.Expression.Assignment assn2)))
+          exp1
+          exp2
+      in
       let comments_diff = syntax_opt loc comments1 comments2 |> Base.Option.value ~default:[] in
       Some (List.concat [pat_diff; exp_diff; comments_diff])
   and object_spread_property loc prop1 prop2 =
     let open Ast.Expression.Object.SpreadProperty in
     let { argument = arg1; comments = comments1 } = prop1 in
     let { argument = arg2; comments = comments2 } = prop2 in
-    let argument_diff = Some (diff_if_changed expression arg1 arg2) in
+    let argument_diff = Some (diff_if_changed (expression ~parent:SpreadParent) arg1 arg2) in
     let comments_diff = syntax_opt loc comments1 comments2 in
     join_diff_list [argument_diff; comments_diff]
   and object_key key1 key2 =
@@ -1605,7 +1676,9 @@ let program
       if sh1 != sh2 then
         None
       else
-        let values = diff_if_changed expression val1 val2 |> Base.Option.return in
+        let values =
+          diff_if_changed (expression ~parent:SlotParent) val1 val2 |> Base.Option.return
+        in
         let keys = diff_if_changed_ret_opt object_key key1 key2 in
         join_diff_list [keys; values]
     | (Method { value = val1; key = key1 }, Method { value = val2; key = key2 }) ->
@@ -1646,8 +1719,9 @@ let program
     if op1 != op2 then
       None
     else
-      let left_diff = diff_if_changed expression left1 left2 in
-      let right_diff = diff_if_changed expression right1 right2 in
+      let parent = ExpressionParent (loc, Ast.Expression.Binary b2) in
+      let left_diff = diff_if_changed (expression ~parent) left1 left2 in
+      let right_diff = diff_if_changed (expression ~parent) right1 right2 in
       let comments_diff = syntax_opt loc comments1 comments2 |> Base.Option.value ~default:[] in
       Some (List.concat [left_diff; right_diff; comments_diff])
   and unary
@@ -1660,7 +1734,8 @@ let program
     if op1 != op2 then
       None
     else
-      Some (comments @ expression arg1 arg2)
+      Some
+        (comments @ expression ~parent:(ExpressionParent (loc, Ast.Expression.Unary u2)) arg1 arg2)
   and identifier (id1 : (Loc.t, Loc.t) Ast.Identifier.t) (id2 : (Loc.t, Loc.t) Ast.Identifier.t) :
       node change list =
     let (old_loc, { Ast.Identifier.name = name1; comments = comments1 }) = id1 in
@@ -1680,9 +1755,10 @@ let program
     let open Ast.Expression.Conditional in
     let { test = test1; consequent = cons1; alternate = alt1; comments = comments1 } = c1 in
     let { test = test2; consequent = cons2; alternate = alt2; comments = comments2 } = c2 in
-    let test_diff = diff_if_changed expression test1 test2 in
-    let cons_diff = diff_if_changed expression cons1 cons2 in
-    let alt_diff = diff_if_changed expression alt1 alt2 in
+    let parent = ExpressionParent (loc, Ast.Expression.Conditional c2) in
+    let test_diff = diff_if_changed (expression ~parent) test1 test2 in
+    let cons_diff = diff_if_changed (expression ~parent) cons1 cons2 in
+    let alt_diff = diff_if_changed (expression ~parent) alt1 alt2 in
     let comments_diff = syntax_opt loc comments1 comments2 |> Base.Option.value ~default:[] in
     Base.List.concat [test_diff; cons_diff; alt_diff; comments_diff]
   and new_
@@ -1694,7 +1770,13 @@ let program
     let comments = syntax_opt loc comments1 comments2 in
     let targs = diff_if_changed_ret_opt (diff_if_changed_opt call_type_args) targs1 targs2 in
     let args = diff_if_changed_ret_opt (diff_if_changed_opt call_args) arguments1 arguments2 in
-    let callee = Some (diff_if_changed expression callee1 callee2) in
+    let callee =
+      Some
+        (diff_if_changed
+           (expression ~parent:(ExpressionParent (loc, Ast.Expression.New new2)))
+           callee1
+           callee2)
+    in
     join_diff_list [comments; targs; args; callee]
   and member
       (loc : Loc.t)
@@ -1703,7 +1785,13 @@ let program
     let open Ast.Expression.Member in
     let { _object = obj1; property = prop1; comments = comments1 } = member1 in
     let { _object = obj2; property = prop2; comments = comments2 } = member2 in
-    let obj = Some (diff_if_changed expression obj1 obj2) in
+    let obj =
+      Some
+        (diff_if_changed
+           (expression ~parent:(ExpressionParent (loc, Ast.Expression.Member member2)))
+           obj1
+           obj2)
+    in
     let prop = diff_if_changed_ret_opt member_property prop1 prop2 in
     let comments = syntax_opt loc comments1 comments2 in
     join_diff_list [obj; prop; comments]
@@ -1713,7 +1801,7 @@ let program
     let open Ast.Expression.Member in
     match (prop1, prop2) with
     | (PropertyExpression exp1, PropertyExpression exp2) ->
-      Some (diff_if_changed expression exp1 exp2)
+      Some (diff_if_changed (expression ~parent:SlotParent) exp1 exp2)
     | (PropertyIdentifier id1, PropertyIdentifier id2) -> Some (diff_if_changed identifier id1 id2)
     | (PropertyPrivateName (loc, n1), PropertyPrivateName (_, n2)) ->
       diff_if_changed_ret_opt (private_name loc) n1 n2
@@ -1731,7 +1819,13 @@ let program
     in
     let targs = diff_if_changed_ret_opt (diff_if_changed_opt call_type_args) targs1 targs2 in
     let args = diff_if_changed_ret_opt call_args arguments1 arguments2 in
-    let callee = Some (diff_if_changed expression callee1 callee2) in
+    let callee =
+      Some
+        (diff_if_changed
+           (expression ~parent:(ExpressionParent (loc, Ast.Expression.Call call2)))
+           callee1
+           callee2)
+    in
     let comments = syntax_opt loc comments1 comments2 in
     join_diff_list [targs; args; callee; comments]
   and call_type_arg
@@ -1768,7 +1862,7 @@ let program
       (expr2 : (Loc.t, Loc.t) Ast.Expression.expression_or_spread) : node change list option =
     match (expr1, expr2) with
     | (Ast.Expression.Expression e1, Ast.Expression.Expression e2) ->
-      Some (diff_if_changed expression e1 e2)
+      Some (diff_if_changed (expression ~parent:SlotParent) e1 e2)
     | (Ast.Expression.Spread spread1, Ast.Expression.Spread spread2) ->
       diff_if_changed_ret_opt spread_element spread1 spread2
     | (_, _) -> None
@@ -1778,7 +1872,8 @@ let program
     let open Ast.Expression in
     match (element1, element2) with
     | (Array.Hole _, Array.Hole _) -> Some []
-    | (Array.Expression e1, Array.Expression e2) -> Some (diff_if_changed expression e1 e2)
+    | (Array.Expression e1, Array.Expression e2) ->
+      Some (diff_if_changed (expression ~parent:SlotParent) e1 e2)
     | (Array.Spread s1, Array.Spread s2) -> diff_if_changed_ret_opt spread_element s1 s2
     | _ -> None
   and spread_element
@@ -1787,7 +1882,7 @@ let program
     let open Ast.Expression.SpreadElement in
     let (loc, { argument = arg1; comments = comments1 }) = spread1 in
     let (_, { argument = arg2; comments = comments2 }) = spread2 in
-    let argument_diff = Some (diff_if_changed expression arg1 arg2) in
+    let argument_diff = Some (diff_if_changed (expression ~parent:SpreadParent) arg1 arg2) in
     let comments_diff = syntax_opt loc comments1 comments2 in
     join_diff_list [argument_diff; comments_diff]
   and logical loc expr1 expr2 =
@@ -1795,8 +1890,9 @@ let program
     let { left = left1; right = right1; operator = operator1; comments = comments1 } = expr1 in
     let { left = left2; right = right2; operator = operator2; comments = comments2 } = expr2 in
     if operator1 == operator2 then
-      let left = diff_if_changed expression left1 left2 in
-      let right = diff_if_changed expression right1 right2 in
+      let parent = ExpressionParent (loc, Ast.Expression.Logical expr2) in
+      let left = diff_if_changed (expression ~parent) left1 left2 in
+      let right = diff_if_changed (expression ~parent) right1 right2 in
       let comments = syntax_opt loc comments1 comments2 |> Base.Option.value ~default:[] in
       Some (Base.List.concat [left; right; comments])
     else
@@ -1812,7 +1908,12 @@ let program
     let open Ast.Expression.Sequence in
     let { expressions = exps1; comments = comments1 } = seq1 in
     let { expressions = exps2; comments = comments2 } = seq2 in
-    let expressions_diff = diff_and_recurse_nonopt_no_trivial expression exps1 exps2 in
+    let expressions_diff =
+      diff_and_recurse_nonopt_no_trivial
+        (expression ~parent:(ExpressionParent (loc, Ast.Expression.Sequence seq2)))
+        exps1
+        exps2
+    in
     let comments_diff = syntax_opt loc comments1 comments2 in
     join_diff_list [expressions_diff; comments_diff]
   and for_statement
@@ -1827,8 +1928,9 @@ let program
       stmt2
     in
     let init = diff_if_changed_opt for_statement_init init1 init2 in
-    let test = diff_if_changed_nonopt_fn expression test1 test2 in
-    let update = diff_if_changed_nonopt_fn expression update1 update2 in
+    let parent = StatementParent (loc, Ast.Statement.For stmt2) in
+    let test = diff_if_changed_nonopt_fn (expression ~parent) test1 test2 in
+    let update = diff_if_changed_nonopt_fn (expression ~parent) update1 update2 in
     let body = Some (diff_if_changed statement body1 body2) in
     let comments = syntax_opt loc comments1 comments2 in
     join_diff_list [init; test; update; body; comments]
@@ -1839,7 +1941,8 @@ let program
     match (init1, init2) with
     | (InitDeclaration (loc, decl1), InitDeclaration (_, decl2)) ->
       variable_declaration loc decl1 decl2
-    | (InitExpression expr1, InitExpression expr2) -> Some (diff_if_changed expression expr1 expr2)
+    | (InitExpression expr1, InitExpression expr2) ->
+      Some (diff_if_changed (expression ~parent:SlotParent) expr1 expr2)
     | (InitDeclaration _, InitExpression _)
     | (InitExpression _, InitDeclaration _) ->
       None
@@ -1861,7 +1964,13 @@ let program
         for_in_statement_lhs left1 left2
     in
     let body = Some (diff_if_changed statement body1 body2) in
-    let right = Some (diff_if_changed expression right1 right2) in
+    let right =
+      Some
+        (diff_if_changed
+           (expression ~parent:(StatementParent (loc, Ast.Statement.ForIn stmt2)))
+           right1
+           right2)
+    in
     let each =
       if each1 != each2 then
         None
@@ -1888,7 +1997,12 @@ let program
     let open Ast.Statement.While in
     let { body = body1; test = test1; comments = comments1 } = stmt1 in
     let { body = body2; test = test2; comments = comments2 } = stmt2 in
-    let test = diff_if_changed expression test1 test2 in
+    let test =
+      diff_if_changed
+        (expression ~parent:(StatementParent (loc, Ast.Statement.While stmt2)))
+        test1
+        test2
+    in
     let body = diff_if_changed statement body1 body2 in
     let comments = syntax_opt loc comments1 comments2 |> Base.Option.value ~default:[] in
     test @ body @ comments
@@ -1910,7 +2024,13 @@ let program
         for_of_statement_lhs left1 left2
     in
     let body = Some (diff_if_changed statement body1 body2) in
-    let right = Some (diff_if_changed expression right1 right2) in
+    let right =
+      Some
+        (diff_if_changed
+           (expression ~parent:(StatementParent (loc, Ast.Statement.ForOf stmt2)))
+           right1
+           right2)
+    in
     let await =
       if await1 != await2 then
         None
@@ -1938,7 +2058,12 @@ let program
     let { body = body1; test = test1; comments = comments1 } = stmt1 in
     let { body = body2; test = test2; comments = comments2 } = stmt2 in
     let body = diff_if_changed statement body1 body2 in
-    let test = diff_if_changed expression test1 test2 in
+    let test =
+      diff_if_changed
+        (expression ~parent:(StatementParent (loc, Ast.Statement.DoWhile stmt2)))
+        test1
+        test2
+    in
     let comments = syntax_opt loc comments1 comments2 |> Base.Option.value ~default:[] in
     Base.List.concat [body; test; comments]
   and debugger_statement
@@ -1965,7 +2090,14 @@ let program
     let { argument = argument1; comments = comments1 } = stmt1 in
     let { argument = argument2; comments = comments2 } = stmt2 in
     let comments = syntax_opt loc comments1 comments2 in
-    join_diff_list [comments; diff_if_changed_nonopt_fn expression argument1 argument2]
+    join_diff_list
+      [
+        comments;
+        diff_if_changed_nonopt_fn
+          (expression ~parent:(StatementParent (loc, Ast.Statement.Return stmt2)))
+          argument1
+          argument2;
+      ]
   and throw_statement
       loc
       (stmt1 : (Loc.t, Loc.t) Ast.Statement.Throw.t)
@@ -1973,7 +2105,12 @@ let program
     let open Ast.Statement.Throw in
     let { argument = argument1; comments = comments1 } = stmt1 in
     let { argument = argument2; comments = comments2 } = stmt2 in
-    let argument = diff_if_changed expression argument1 argument2 in
+    let argument =
+      diff_if_changed
+        (expression ~parent:(StatementParent (loc, Ast.Statement.Throw stmt2)))
+        argument1
+        argument2
+    in
     let comments = syntax_opt loc comments1 comments2 |> Base.Option.value ~default:[] in
     argument @ comments
   and labeled_statement
@@ -1994,7 +2131,13 @@ let program
     let open Ast.Statement.Switch in
     let { discriminant = discriminant1; cases = cases1; comments = comments1 } = stmt1 in
     let { discriminant = discriminant2; cases = cases2; comments = comments2 } = stmt2 in
-    let discriminant = Some (diff_if_changed expression discriminant1 discriminant2) in
+    let discriminant =
+      Some
+        (diff_if_changed
+           (expression ~parent:(StatementParent (loc, Ast.Statement.Switch stmt2)))
+           discriminant1
+           discriminant2)
+    in
     let cases = diff_and_recurse_no_trivial switch_case cases1 cases2 in
     let comments = syntax_opt loc comments1 comments2 in
     join_diff_list [discriminant; cases; comments]
@@ -2004,7 +2147,7 @@ let program
     let open Ast.Statement.Switch.Case in
     let { test = test1; consequent = consequent1; comments = comments1 } = s1 in
     let { test = test2; consequent = consequent2; comments = comments2 } = s2 in
-    let test = diff_if_changed_nonopt_fn expression test1 test2 in
+    let test = diff_if_changed_nonopt_fn (expression ~parent:SlotParent) test1 test2 in
     let consequent = statement_list consequent1 consequent2 in
     let comments = syntax_opt loc comments1 comments2 in
     join_diff_list [test; consequent; comments]
@@ -2022,7 +2165,8 @@ let program
       | ((_, Ast.Pattern.Identifier i1), (_, Ast.Pattern.Identifier i2)) -> pattern_identifier i1 i2
       | ((loc, Ast.Pattern.Array a1), (_, Ast.Pattern.Array a2)) -> pattern_array loc a1 a2
       | ((loc, Ast.Pattern.Object o1), (_, Ast.Pattern.Object o2)) -> pattern_object loc o1 o2
-      | ((_, Ast.Pattern.Expression e1), (_, Ast.Pattern.Expression e2)) -> Some (expression e1 e2)
+      | ((_, Ast.Pattern.Expression e1), (_, Ast.Pattern.Expression e2)) ->
+        Some (expression ~parent:SlotParent e1 e2)
       | (_, _) -> None
     in
     let old_loc = Ast_utils.loc_of_pattern p1 in
@@ -2051,7 +2195,7 @@ let program
       let { key = key2; pattern = pattern2; default = default2; shorthand = shorthand2 } = p4 in
       let keys = diff_if_changed_ret_opt pattern_object_property_key key1 key2 in
       let pats = Some (diff_if_changed pattern pattern1 pattern2) in
-      let defaults = diff_if_changed_nonopt_fn expression default1 default2 in
+      let defaults = diff_if_changed_nonopt_fn (expression ~parent:SlotParent) default1 default2 in
       (match (shorthand1, shorthand2) with
       | (false, false) -> join_diff_list [keys; pats; defaults]
       | (_, _) -> None)
@@ -2096,7 +2240,7 @@ let program
     let { argument = argument1; default = default1 } = e1 in
     let { argument = argument2; default = default2 } = e2 in
     let args = Some (diff_if_changed pattern argument1 argument2) in
-    let defaults = diff_if_changed_nonopt_fn expression default1 default2 in
+    let defaults = diff_if_changed_nonopt_fn (expression ~parent:SlotParent) default1 default2 in
     join_diff_list [args; defaults]
   and pattern_rest_element
       ((loc, r1) : (Loc.t, Loc.t) Ast.Pattern.RestElement.t)
@@ -2422,13 +2566,24 @@ let program
     let arg_diff = diff_if_changed_ret_opt function_param_type arg1 arg2 in
     let comments_diff = syntax_opt loc comments1 comments2 in
     join_diff_list [arg_diff; comments_diff]
+  and function_this_constraint_type
+      (ftct1 : (Loc.t, Loc.t) Ast.Type.Function.ThisParam.t)
+      (ftct2 : (Loc.t, Loc.t) Ast.Type.Function.ThisParam.t) : node change list option =
+    let open Ast.Type.Function.ThisParam in
+    let (loc, { annot = annot1; comments = comments1 }) = ftct1 in
+    let (_, { annot = annot2; comments = comments2 }) = ftct2 in
+    let annot_diff = Some (diff_if_changed type_annotation annot1 annot2) in
+    let comments_diff = syntax_opt loc comments1 comments2 in
+    join_diff_list [annot_diff; comments_diff]
   and function_type
       (loc : Loc.t)
       (ft1 : (Loc.t, Loc.t) Ast.Type.Function.t)
       (ft2 : (Loc.t, Loc.t) Ast.Type.Function.t) : node change list option =
     let open Ast.Type.Function in
     let {
-      params = (params_loc, { Params.params = params1; rest = rest1; comments = params_comments1 });
+      params =
+        ( params_loc,
+          { Params.this_ = this1; params = params1; rest = rest1; comments = params_comments1 } );
       return = return1;
       tparams = tparams1;
       comments = func_comments1;
@@ -2436,7 +2591,8 @@ let program
       ft1
     in
     let {
-      params = (_, { Params.params = params2; rest = rest2; comments = params_comments2 });
+      params =
+        (_, { Params.this_ = this2; params = params2; rest = rest2; comments = params_comments2 });
       return = return2;
       tparams = tparams2;
       comments = func_comments2;
@@ -2444,13 +2600,22 @@ let program
       ft2
     in
     let tparams_diff = diff_if_changed_opt type_params tparams1 tparams2 in
+    let this_diff = diff_if_changed_opt function_this_constraint_type this1 this2 in
     let params_diff = diff_and_recurse_no_trivial function_param_type params1 params2 in
     let rest_diff = diff_if_changed_opt function_rest_param_type rest1 rest2 in
     let return_diff = diff_if_changed type_ return1 return2 |> Base.Option.return in
     let func_comments_diff = syntax_opt loc func_comments1 func_comments2 in
     let params_comments_diff = syntax_opt params_loc params_comments1 params_comments2 in
     join_diff_list
-      [tparams_diff; params_diff; rest_diff; return_diff; func_comments_diff; params_comments_diff]
+      [
+        tparams_diff;
+        this_diff;
+        params_diff;
+        rest_diff;
+        return_diff;
+        func_comments_diff;
+        params_comments_diff;
+      ]
   and nullable_type
       (loc : Loc.t)
       (t1 : (Loc.t, Loc.t) Ast.Type.Nullable.t)
@@ -2615,6 +2780,160 @@ let program
     let annot_diff = Some (diff_if_changed type_annotation_hint annot1 annot2) in
     let comments_diff = syntax_opt loc comments1 comments2 in
     join_diff_list [id_diff; annot_diff; comments_diff]
+  and enum_declaration
+      (loc : Loc.t)
+      (enum1 : (Loc.t, Loc.t) Ast.Statement.EnumDeclaration.t)
+      (enum2 : (Loc.t, Loc.t) Ast.Statement.EnumDeclaration.t) : node change list option =
+    let open Ast.Statement.EnumDeclaration in
+    let { id = id1; body = body1; comments = comments1 } = enum1 in
+    let { id = id2; body = body2; comments = comments2 } = enum2 in
+    let id_diff = Some (diff_if_changed identifier id1 id2) in
+    let body_diff = enum_body body1 body2 in
+    let comments_diff = syntax_opt loc comments1 comments2 in
+    join_diff_list [id_diff; body_diff; comments_diff]
+  and enum_body
+      (body1 : Loc.t Ast.Statement.EnumDeclaration.body)
+      (body2 : Loc.t Ast.Statement.EnumDeclaration.body) : node change list option =
+    let open Ast.Statement.EnumDeclaration in
+    match (body1, body2) with
+    | ((loc, BooleanBody b1), (_, BooleanBody b2)) ->
+      let {
+        members = members1;
+        explicit_type = explicit_type1;
+        has_unknown_members = has_unknown_members1;
+        BooleanBody.comments = comments1;
+      } =
+        b1
+      in
+      let {
+        members = members2;
+        explicit_type = explicit_type2;
+        has_unknown_members = has_unknown_members2;
+        BooleanBody.comments = comments2;
+      } =
+        b2
+      in
+      let members_diff = diff_and_recurse_no_trivial enum_boolean_member members1 members2 in
+      let comments_diff = syntax_opt loc comments1 comments2 in
+      if has_unknown_members1 != has_unknown_members2 || explicit_type1 != explicit_type2 then
+        None
+      else
+        join_diff_list [members_diff; comments_diff]
+    | ((loc, NumberBody b1), (_, NumberBody b2)) ->
+      let {
+        members = members1;
+        explicit_type = explicit_type1;
+        has_unknown_members = has_unknown_members1;
+        NumberBody.comments = comments1;
+      } =
+        b1
+      in
+      let {
+        members = members2;
+        explicit_type = explicit_type2;
+        has_unknown_members = has_unknown_members2;
+        NumberBody.comments = comments2;
+      } =
+        b2
+      in
+      let members_diff = diff_and_recurse_no_trivial enum_number_member members1 members2 in
+      let comments_diff = syntax_opt loc comments1 comments2 in
+      if has_unknown_members1 != has_unknown_members2 || explicit_type1 != explicit_type2 then
+        None
+      else
+        join_diff_list [members_diff; comments_diff]
+    | ((loc, StringBody b1), (_, StringBody b2)) ->
+      let {
+        members = members1;
+        explicit_type = explicit_type1;
+        has_unknown_members = has_unknown_members1;
+        StringBody.comments = comments1;
+      } =
+        b1
+      in
+      let {
+        members = members2;
+        explicit_type = explicit_type2;
+        has_unknown_members = has_unknown_members2;
+        StringBody.comments = comments2;
+      } =
+        b2
+      in
+      let members_diff =
+        match (members1, members2) with
+        | (StringBody.Defaulted m1, StringBody.Defaulted m2) ->
+          diff_and_recurse_no_trivial enum_defaulted_member m1 m2
+        | (StringBody.Initialized m1, StringBody.Initialized m2) ->
+          diff_and_recurse_no_trivial enum_string_member m1 m2
+        | _ -> None
+      in
+      let comments_diff = syntax_opt loc comments1 comments2 in
+      if has_unknown_members1 != has_unknown_members2 || explicit_type1 != explicit_type2 then
+        None
+      else
+        join_diff_list [members_diff; comments_diff]
+    | ((loc, SymbolBody b1), (_, SymbolBody b2)) ->
+      let {
+        members = members1;
+        has_unknown_members = has_unknown_members1;
+        SymbolBody.comments = comments1;
+      } =
+        b1
+      in
+      let {
+        members = members2;
+        has_unknown_members = has_unknown_members2;
+        SymbolBody.comments = comments2;
+      } =
+        b2
+      in
+      let members_diff = diff_and_recurse_no_trivial enum_defaulted_member members1 members2 in
+      let comments_diff = syntax_opt loc comments1 comments2 in
+      if has_unknown_members1 != has_unknown_members2 then
+        None
+      else
+        join_diff_list [members_diff; comments_diff]
+    | (_, _) -> None
+  and enum_defaulted_member
+      (member1 : Loc.t Ast.Statement.EnumDeclaration.DefaultedMember.t)
+      (member2 : Loc.t Ast.Statement.EnumDeclaration.DefaultedMember.t) : node change list option =
+    let open Ast.Statement.EnumDeclaration.DefaultedMember in
+    let (_, { id = id1 }) = member1 in
+    let (_, { id = id2 }) = member2 in
+    Some (diff_if_changed identifier id1 id2)
+  and enum_boolean_member
+      (member1 :
+        (Loc.t Ast.BooleanLiteral.t, Loc.t) Ast.Statement.EnumDeclaration.InitializedMember.t)
+      (member2 :
+        (Loc.t Ast.BooleanLiteral.t, Loc.t) Ast.Statement.EnumDeclaration.InitializedMember.t) =
+    let open Ast.Statement.EnumDeclaration.InitializedMember in
+    let (_, { id = id1; init = init1 }) = member1 in
+    let (_, { id = id2; init = init2 }) = member2 in
+    let id_diff = Some (diff_if_changed identifier id1 id2) in
+    let value_diff = diff_if_changed_ret_opt boolean_literal init1 init2 in
+    join_diff_list [id_diff; value_diff]
+  and enum_number_member
+      (member1 :
+        (Loc.t Ast.NumberLiteral.t, Loc.t) Ast.Statement.EnumDeclaration.InitializedMember.t)
+      (member2 :
+        (Loc.t Ast.NumberLiteral.t, Loc.t) Ast.Statement.EnumDeclaration.InitializedMember.t) =
+    let open Ast.Statement.EnumDeclaration.InitializedMember in
+    let (_, { id = id1; init = init1 }) = member1 in
+    let (_, { id = id2; init = init2 }) = member2 in
+    let id_diff = Some (diff_if_changed identifier id1 id2) in
+    let value_diff = diff_if_changed_ret_opt number_literal init1 init2 in
+    join_diff_list [id_diff; value_diff]
+  and enum_string_member
+      (member1 :
+        (Loc.t Ast.StringLiteral.t, Loc.t) Ast.Statement.EnumDeclaration.InitializedMember.t)
+      (member2 :
+        (Loc.t Ast.StringLiteral.t, Loc.t) Ast.Statement.EnumDeclaration.InitializedMember.t) =
+    let open Ast.Statement.EnumDeclaration.InitializedMember in
+    let (_, { id = id1; init = init1 }) = member1 in
+    let (_, { id = id2; init = init2 }) = member2 in
+    let id_diff = Some (diff_if_changed identifier id1 id2) in
+    let value_diff = diff_if_changed_ret_opt string_literal init1 init2 in
+    join_diff_list [id_diff; value_diff]
   and type_params
       (pd1 : (Loc.t, Loc.t) Ast.Type.TypeParams.t) (pd2 : (Loc.t, Loc.t) Ast.Type.TypeParams.t) :
       node change list option =
@@ -2675,18 +2994,24 @@ let program
     let open Flow_ast.Expression.TypeCast in
     let { expression = expr1; annot = annot1; comments = comments1 } = type_cast1 in
     let { expression = expr2; annot = annot2; comments = comments2 } = type_cast2 in
-    let expr = diff_if_changed expression expr1 expr2 in
+    let expr =
+      diff_if_changed
+        (expression ~parent:(ExpressionParent (loc, Ast.Expression.TypeCast type_cast2)))
+        expr1
+        expr2
+    in
     let annot = diff_if_changed type_annotation annot1 annot2 in
     let comments = syntax_opt loc comments1 comments2 |> Base.Option.value ~default:[] in
     Base.List.concat [expr; annot; comments]
   and type_cast_added
+      (parent : expression_node_parent)
       (expr : (Loc.t, Loc.t) Flow_ast.Expression.t)
       (loc : Loc.t)
       (type_cast : (Loc.t, Loc.t) Flow_ast.Expression.TypeCast.t) : node change list =
     let open Flow_ast.Expression.TypeCast in
     Loc.(
       let { expression = expr2; annot = annot2; comments = _ } = type_cast in
-      let expr_diff_rev = diff_if_changed expression expr expr2 |> List.rev in
+      let expr_diff_rev = diff_if_changed (expression ~parent) expr expr2 |> List.rev in
       let append_annot_rev =
         ({ loc with start = loc._end }, insert ~sep:(Some "") [TypeAnnotation annot2; Raw ")"])
         :: expr_diff_rev
@@ -2702,7 +3027,9 @@ let program
     if op1 != op2 || p1 != p2 then
       None
     else
-      let argument = expression arg1 arg2 in
+      let argument =
+        expression ~parent:(ExpressionParent (loc, Ast.Expression.Update update2)) arg1 arg2
+      in
       let comments = syntax_opt loc comments1 comments2 |> Base.Option.value ~default:[] in
       Some (argument @ comments)
   and this_expression
@@ -2737,7 +3064,13 @@ let program
     let open Ast.Expression.Import in
     let { argument = argument1; comments = comments1 } = import1 in
     let { argument = argument2; comments = comments2 } = import2 in
-    let argument = Some (diff_if_changed expression argument1 argument2) in
+    let argument =
+      Some
+        (diff_if_changed
+           (expression ~parent:(ExpressionParent (loc, Ast.Expression.Import import2)))
+           argument1
+           argument2)
+    in
     let comments = syntax_opt loc comments1 comments2 in
     join_diff_list [argument; comments]
   and computed_key
@@ -2747,7 +3080,9 @@ let program
     let open Ast.ComputedKey in
     let { expression = expression1; comments = comments1 } = computed1 in
     let { expression = expression2; comments = comments2 } = computed2 in
-    let expression_diff = Some (diff_if_changed expression expression1 expression2) in
+    let expression_diff =
+      Some (diff_if_changed (expression ~parent:SlotParent) expression1 expression2)
+    in
     let comments_diff = syntax_opt loc comments1 comments2 in
     join_diff_list [expression_diff; comments_diff]
   and private_name

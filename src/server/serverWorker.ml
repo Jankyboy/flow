@@ -29,8 +29,7 @@ module ServerWorkerState = struct
     Flow_server_profile.init_from_id profile_id;
 
     let init_id = init_id ^ "." ^ Random_id.short_string () in
-    let version = Flow_version.version in
-    FlowEventLogger.init_worker ~init_id ~version (Unix.gettimeofday ());
+    FlowEventLogger.init_worker ~init_id (Unix.gettimeofday ());
 
     match log_filename with
     | None -> ()
@@ -44,12 +43,7 @@ end
    [Daemon.check_entry_point]. *)
 let entry = WorkerController.register_entry_point ~restore:ServerWorkerState.restore
 
-(* Saves the default GC settings, which are restored by the workers. Workers can
- * have more relaxed GC configs as they are short-lived processes, and this
- * prevents the workers from inheriting GC settings the master needs. *)
-let gc_control = Caml.Gc.{ (get ()) with minor_heap_size = 1024 * 1024 * 2 }
-
-let make ~n ~init_id heap_handle =
+let make ~n ~gc_control ~init_id heap_handle =
   MultiWorkerLwt.make
     ?call_wrapper:None
     ~saved_state:(ServerWorkerState.save ~init_id)

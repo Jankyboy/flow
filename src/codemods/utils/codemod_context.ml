@@ -8,10 +8,12 @@
 module Typed = struct
   type t = {
     file: File_key.t;
+    type_sig: Type_sig_collections.Locs.index Packed_type_sig.Module.t;
     file_sig: File_sig.With_ALoc.t;
     metadata: Context.metadata;
     options: Options.t;
     full_cx: Context.t;
+    master_cx: Context.master_context;
     typed_ast: (ALoc.t, ALoc.t * Type.t) Flow_ast.Program.t;
     docblock: Docblock.t;
     iteration: int;

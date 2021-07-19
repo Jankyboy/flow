@@ -8,9 +8,43 @@
 module Ast = Flow_ast
 open Layout
 
+module Trailing_commas = struct
+  type t =
+    | All  (** Wherever possible (including function arguments). *)
+    | ES5  (** Where valid in ES5 (objects, arrays, etc.) *)
+    | Off  (** No trailing commas *)
+
+  let enabled_for_function_params = function
+    | All -> true
+    | ES5 -> false
+    | Off -> false
+
+  let enabled_for_function_args = function
+    | All -> true
+    | ES5 -> true
+    | Off -> false
+
+  let enabled_for_objects = function
+    | All -> true
+    | ES5 -> true
+    | Off -> false
+
+  let enabled_for_arrays = function
+    | All -> true
+    | ES5 -> true
+    | Off -> false
+
+  let enabled_for_types = function
+    | All -> true
+    | ES5 -> true
+    | Off -> false
+end
+
 type opts = {
-  preserve_formatting: bool;
   bracket_spacing: bool;
+  preserve_formatting: bool;
+  single_quotes: bool;
+  trailing_commas: Trailing_commas.t;
 }
 
 (* There are some cases where expressions must be wrapped in parens to eliminate
@@ -23,29 +57,34 @@ type expression_context = {
   group: expression_context_group;
 }
 
+(** certain contexts where the left parenthesis matters. this is set back to [Normal_left]
+    as soon as we output something (see [context_after_token]). *)
 and expression_context_left =
   | Normal_left
-  | In_expression_statement (* `(function x(){});` would become a declaration *)
-  | In_tagged_template (* `(new a)``` would become `new (a``)` *)
-  | In_plus_op (* `x+(+y)` would become `(x++)y` *)
-  | In_minus_op
+  | In_expression_statement  (** [(function x(){});] would become a declaration w/o the paren **)
+  | In_tagged_template  (** [(new a)``] would become [new (a``)] w/o the paren *)
+  | In_plus_op  (** [x+(+y)] would become [(x++)y] w/o the paren *)
+  | In_minus_op  (** [x-(-y)] would become [(x--)y] w/o the paren *)
 
-(* `x-(-y)` would become `(x--)y` *)
 and expression_context_group =
   | Normal_group
-  | In_arrow_func (* `() => ({a: b})` would become `() => {a: b}` *)
-  | In_for_init
+  | In_arrow_func  (** [() => ({a: b})] would be a block w/ a labeled statement w/o the parens *)
+  | In_for_init  (** [for ((x in y);;);] would become a for-in w/o the parens *)
 
-(* `for ((x in y);;);` would become a for-in *)
-
-let default_opts = { preserve_formatting = false; bracket_spacing = true }
+let default_opts =
+  {
+    bracket_spacing = true;
+    preserve_formatting = false;
+    single_quotes = false;
+    trailing_commas = Trailing_commas.All;
+  }
 
 let normal_context = { left = Normal_left; group = Normal_group }
 
-(* Some contexts only matter to the left-most token. If we output some other
-   token, like an `=`, then we can reset the context. Note that all contexts
-   reset when wrapped in parens, brackets, braces, etc, so we don't need to call
-   this in those cases, we can just set it back to Normal. *)
+(** Some contexts only matter to the left-most token. If we output some other
+    token, like an `=`, then we can reset the context. Note that all contexts
+    reset when wrapped in parens, brackets, braces, etc, so we don't need to call
+    this in those cases, we can just set it back to Normal. *)
 let context_after_token ctxt = { ctxt with left = Normal_left }
 
 (* JS layout helpers *)
@@ -276,12 +315,20 @@ let better_quote =
       in
       count acc str (pred i)
   in
-  fun str ->
-    let (double, single) = count (0, 0) str (String.length str - 1) in
-    if double > single then
-      "'"
+  fun ~prefer_single_quotes str ->
+    let (double_count, single_count) = count (0, 0) str (String.length str - 1) in
+    let double = ("\"", double_count) in
+    let single = ("'", single_count) in
+    let (preferred, alternate) =
+      if prefer_single_quotes then
+        (single, double)
+      else
+        (double, single)
+    in
+    if snd preferred > snd alternate then
+      fst alternate
     else
-      "\""
+      fst preferred
 
 let utf8_escape =
   (* a null character can be printed as \x00 or \0. but if the next character is an ASCII digit,
@@ -365,8 +412,8 @@ let utf8_escape =
         (* supplemental planes *)
         | n ->
           (* ES5 does not support the \u{} syntax, so print surrogate pairs
-         "\ud83d\udca9" instead of "\u{1f4A9}". if we add a flag to target
-         ES6, we should change this. *)
+             "\ud83d\udca9" instead of "\u{1f4A9}". if we add a flag to target
+             ES6, we should change this. *)
           let n' = n - 0x10000 in
           let hi = 0xD800 lor (n' lsr 10) in
           let lo = 0xDC00 lor (n' land 0x3FF) in
@@ -465,7 +512,7 @@ let internal_comments = function
 
 (* Given a set of comment bounds, determine what separator should be inserted before the
    comments to preserve whether the first comment starts on a new line.
-   
+
    - If there are no leading comments return the specified separator.
    - If the first leading comment starts on a new line, ignore the specified separator and
      return a hard line break.
@@ -675,8 +722,8 @@ and statement ?(pretty_semicolon = false) ~opts (root_stmt : (Loc.t, Loc.t) Ast.
                    wrap_in_parens_on_break (expression ~opts arg)
                  | _ ->
                    (* If the return argument has a leading comment then we must wrap the argument
-                     and its comments in parens. Otherwise, the comments could push the argument
-                     to the next line, meaning the return would be parsed without an argument. *)
+                      and its comments in parens. Otherwise, the comments could push the argument
+                      to the next line, meaning the return would be parsed without an argument. *)
                    let (leading, _) = Comment_attachment.expression_comment_bounds arg in
                    let arg = expression ~opts arg in
                    if leading = None then
@@ -776,10 +823,10 @@ and statement ?(pretty_semicolon = false) ~opts (root_stmt : (Loc.t, Loc.t) Ast.
         @@ fuse
              [
                Atom "for";
-               ( if each then
+               (if each then
                  fuse [space; Atom "each"]
                else
-                 Empty );
+                 Empty);
                pretty_space;
                wrap_in_parens
                  (fuse_with_space
@@ -810,10 +857,10 @@ and statement ?(pretty_semicolon = false) ~opts (root_stmt : (Loc.t, Loc.t) Ast.
         @@ fuse
              [
                Atom "for";
-               ( if await then
+               (if await then
                  fuse [space; Atom "await"]
                else
-                 Empty );
+                 Empty);
                pretty_space;
                wrap_in_parens
                  (fuse
@@ -830,7 +877,7 @@ and statement ?(pretty_semicolon = false) ~opts (root_stmt : (Loc.t, Loc.t) Ast.
                     ]);
                statement_after_test ~opts ~pretty_semicolon body;
              ]
-      | S.ImportDeclaration import -> import_declaration loc import
+      | S.ImportDeclaration import -> import_declaration ~opts loc import
       | S.ExportNamedDeclaration export -> export_declaration ~opts loc export
       | S.ExportDefaultDeclaration export -> export_default_declaration ~opts loc export
       | S.TypeAlias typeAlias -> type_alias ~opts ~declare:false loc typeAlias
@@ -895,7 +942,7 @@ and expression ?(ctxt = normal_context) ~opts (root_expr : (Loc.t, Loc.t) Ast.Ex
         let trailing_comma =
           if has_trailing_hole then
             Atom ","
-          else if elements <> [] then
+          else if elements <> [] && Trailing_commas.enabled_for_arrays opts.trailing_commas then
             if_break (Atom ",") Empty
           else
             Empty
@@ -920,7 +967,11 @@ and expression ?(ctxt = normal_context) ~opts (root_expr : (Loc.t, Loc.t) Ast.Ex
             ~f:(fun i prop ->
               (* Add trailing comma to last property *)
               let prop_layout =
-                if i = num_props - 1 && internal_comments = [] then
+                if
+                  i = num_props - 1
+                  && internal_comments = []
+                  && Trailing_commas.enabled_for_objects opts.trailing_commas
+                then
                   fuse [object_property ~opts prop; if_break (Atom ",") Empty]
                 else
                   object_property ~opts prop
@@ -946,8 +997,8 @@ and expression ?(ctxt = normal_context) ~opts (root_expr : (Loc.t, Loc.t) Ast.Ex
         layout_node_with_comments_opt loc comments @@ group [props_layout]
       | E.Sequence { E.Sequence.expressions; comments } ->
         (* to get an AST like `x, (y, z)`, then there must've been parens
-         around the right side. we can force that by bumping the minimum
-         precedence. *)
+           around the right side. we can force that by bumping the minimum
+           precedence. *)
         let precedence = precedence + 1 in
         let layouts =
           Base.List.map ~f:(expression_with_parens ~precedence ~ctxt ~opts) expressions
@@ -978,7 +1029,6 @@ and expression ?(ctxt = normal_context) ~opts (root_expr : (Loc.t, Loc.t) Ast.Ex
                end;
              ]
       | E.Binary { E.Binary.operator; left; right; comments } ->
-        let module B = E.Binary in
         layout_node_with_comments_opt loc comments
         @@ fuse_with_space
              [
@@ -1001,8 +1051,8 @@ and expression ?(ctxt = normal_context) ~opts (root_expr : (Loc.t, Loc.t) Ast.Ex
                    fuse [right_separator; expression ~ctxt ~opts right]
                  | _ ->
                    (* to get an AST like `x + (y - z)`, then there must've been parens
-             around the right side. we can force that by bumping the minimum
-             precedence to not have parens. *)
+                      around the right side. we can force that by bumping the minimum
+                      precedence to not have parens. *)
                    let precedence = precedence + 1 in
                    let ctxt =
                      {
@@ -1072,7 +1122,7 @@ and expression ?(ctxt = normal_context) ~opts (root_expr : (Loc.t, Loc.t) Ast.Ex
         in
         let right = expression_with_parens ~precedence:(precedence + 1) ~ctxt ~opts right in
         (* if we need to wrap, the op stays on the first line, with the RHS on a
-         new line and indented by 2 spaces *)
+           new line and indented by 2 spaces *)
         layout_node_with_comments_opt loc comments
         @@ Group [left; pretty_space; operator; Indent (fuse [right_separator; right])]
       | E.Member m -> member ~precedence ~ctxt ~opts m loc
@@ -1122,12 +1172,12 @@ and expression ?(ctxt = normal_context) ~opts (root_expr : (Loc.t, Loc.t) Ast.Ex
         @@ fuse
              [
                s_operator;
-               ( if needs_space then
+               (if needs_space then
                  match argument with
                  | (_, E.Sequence _) -> Empty
                  | _ -> space
                else
-                 Empty );
+                 Empty);
                expr;
              ]
       | E.Update { E.Update.operator; prefix; argument; comments } ->
@@ -1140,7 +1190,7 @@ and expression ?(ctxt = normal_context) ~opts (root_expr : (Loc.t, Loc.t) Ast.Ex
              | E.Update.Decrement -> Atom "--"
            in
            (* we never need to wrap `argument` in parens because it must be a valid
-         left-hand side expression *)
+              left-hand side expression *)
            if prefix then
              fuse [s_operator; expression ~ctxt ~opts argument]
            else
@@ -1151,10 +1201,10 @@ and expression ?(ctxt = normal_context) ~opts (root_expr : (Loc.t, Loc.t) Ast.Ex
         @@ fuse
              [
                Atom "yield";
-               ( if delegate then
+               (if delegate then
                  Atom "*"
                else
-                 Empty );
+                 Empty);
                (match argument with
                | Some arg -> fuse [space; expression ~ctxt ~opts arg]
                | None -> Empty);
@@ -1292,7 +1342,7 @@ and literal ~opts loc { Ast.Literal.raw; value; comments } =
   | _ when opts.preserve_formatting -> Atom raw
   | Number num -> number_literal ~in_member_object:false raw num
   | String str ->
-    let quote = better_quote str in
+    let quote = better_quote ~prefer_single_quotes:opts.single_quotes str in
     fuse [Atom quote; Atom (utf8_escape ~quote str); Atom quote]
   | RegExp { RegExp.pattern; flags } ->
     let flags = flags |> String_utils.to_list |> List.sort Char.compare |> String_utils.of_list in
@@ -1310,10 +1360,10 @@ and boolean_literal_type loc { Ast.BooleanLiteral.value; comments } =
     loc
     comments
     (Atom
-       ( if value then
+       (if value then
          "true"
        else
-         "false" ))
+         "false"))
 
 and member ?(optional = false) ~opts ~precedence ~ctxt member_node loc =
   let { Ast.Expression.Member._object; property; comments } = member_node in
@@ -1385,8 +1435,9 @@ and member ?(optional = false) ~opts ~precedence ~ctxt member_node loc =
          property_layout_with_delims;
        ]
 
-and string_literal (loc, { Ast.StringLiteral.value; comments; _ }) =
-  let quote = better_quote value in
+and string_literal ~opts (loc, { Ast.StringLiteral.value; comments; _ }) =
+  let prefer_single_quotes = opts.single_quotes in
+  let quote = better_quote ~prefer_single_quotes value in
   source_location_with_comments
     ?comments
     (loc, fuse [Atom quote; Atom (utf8_escape ~quote value); Atom quote])
@@ -1508,10 +1559,10 @@ and pattern ?(ctxt = normal_context) ~opts ((loc, pat) : (Loc.t, Loc.t) Ast.Patt
         fuse
           [
             identifier name;
-            ( if optional then
+            (if optional then
               Atom "?"
             else
-              Empty );
+              Empty);
             hint (type_annotation ~opts) annot;
           ]
       | P.Expression expr -> expression ~ctxt ~opts expr )
@@ -1539,20 +1590,20 @@ and template_literal ~opts { Ast.Expression.TemplateLiteral.quasis; expressions;
           ( loc,
             fuse
               [
-                ( if i > 0 then
+                (if i > 0 then
                   Atom "}"
                 else
-                  Empty );
+                  Empty);
                 Atom raw;
-                ( if not tail then
+                (if not tail then
                   Atom "${"
                 else
-                  Empty );
+                  Empty);
               ] );
-        ( if not tail then
+        (if not tail then
           expression ~opts (List.nth expressions i)
         else
-          Empty );
+          Empty);
       ]
   in
   fuse [Atom "`"; fuse (List.mapi template_element quasis); Atom "`"]
@@ -1655,6 +1706,7 @@ and arrow_function
                 } );
             ];
           rest = None;
+          this_ = None;
           (* We must wrap the single param in parentheses if there are internal comments *)
           comments = None | Some { Ast.Syntax.internal = []; _ };
         } ) ->
@@ -1700,15 +1752,15 @@ and arrow_function
        [
          fuse_with_space
            [
-             ( if async then
+             (if async then
                Atom "async"
              else
-               Empty );
+               Empty);
              params_and_stuff;
            ];
          (* Babylon does not parse ():*=>{}` because it thinks the `*=` is an
-       unexpected multiply-and-assign operator. Thus, we format this with a
-       space e.g. `():* =>{}`. *)
+            unexpected multiply-and-assign operator. Thus, we format this with a
+            space e.g. `():* =>{}`. *)
          begin
            match return with
            | Ast.Type.Available (_, (_, Ast.Type.Exists _)) -> space
@@ -1745,10 +1797,10 @@ and function_ ~opts loc func =
       fuse
         [
           Atom "function";
-          ( if generator then
+          (if generator then
             Atom "*"
           else
-            Empty );
+            Empty);
         ]
     in
     let id =
@@ -1812,7 +1864,7 @@ and list_add_internal_comments list list_layout comments =
         list_layout @ [comments_layout])
 
 and function_params
-    ?(ctxt = normal_context) ~opts (_, { Ast.Function.Params.params; rest; comments }) =
+    ?(ctxt = normal_context) ~opts (_, { Ast.Function.Params.params; rest; comments; this_ }) =
   let params =
     Base.List.map
       ~f:(fun ((loc, _) as param) ->
@@ -1836,10 +1888,29 @@ and function_params
       params @ [rest_param]
     | None -> params
   in
+  (* Add this param *)
+  let params =
+    match this_ with
+    | None -> params
+    | Some ((loc, { Ast.Function.ThisParam.annot; comments }) as param) ->
+      let this_layout =
+        source_location_with_comments
+          ?comments
+          (loc, fuse [Atom "this"; type_annotation ~opts annot])
+      in
+      let this_param =
+        (loc, Comment_attachment.function_this_param_comment_bounds param, this_layout)
+      in
+      this_param :: params
+  in
   let params_layout = list_with_newlines ~sep:(Atom ",") ~sep_linebreak:pretty_line params in
   (* Add trailing comma *)
   let params_layout =
-    if params <> [] && rest = None then
+    if
+      params <> []
+      && rest = None
+      && Trailing_commas.enabled_for_function_params opts.trailing_commas
+    then
       params_layout @ [if_break (Atom ",") Empty]
     else
       params_layout
@@ -1952,10 +2023,10 @@ and class_method
       fuse
         [
           decorators_list ~opts decorators;
-          ( if static then
+          (if static then
             fuse [Atom "static"; space]
           else
-            Empty );
+            Empty);
           source_location_with_comments
             ( func_loc,
               function_base
@@ -1983,14 +2054,14 @@ and class_property_helper ~opts loc key value static annot variance_ comments =
       with_semicolon
         (fuse
            [
-             ( if declare then
+             (if declare then
                fuse [Atom "declare"; space]
              else
-               Empty );
-             ( if static then
+               Empty);
+             (if static then
                fuse [Atom "static"; space]
              else
-               Empty );
+               Empty);
              option variance variance_;
              key;
              hint (type_annotation ~opts) annot;
@@ -2099,8 +2170,8 @@ and class_implements ~opts implements =
              ] ))
 
 and class_base
-    ~opts loc { Ast.Class.id; body; tparams; extends; implements; classDecorators; comments } =
-  let decorator_parts = decorators_list ~opts classDecorators in
+    ~opts loc { Ast.Class.id; body; tparams; extends; implements; class_decorators; comments } =
+  let decorator_parts = decorators_list ~opts class_decorators in
   let class_parts =
     [
       Atom "class";
@@ -2171,10 +2242,10 @@ and enum_declaration loc { Ast.Statement.EnumDeclaration.id; body; comments } =
       (layout_node_with_comments_opt
          loc
          comments
-         ( if init_value then
+         (if init_value then
            Atom "true"
          else
-           Atom "false" ))
+           Atom "false"))
   in
   let number_member
       (_, { InitializedMember.id; init = (loc, { Ast.NumberLiteral.raw; comments; _ }) }) =
@@ -2184,46 +2255,70 @@ and enum_declaration loc { Ast.Statement.EnumDeclaration.id; body; comments } =
       (_, { InitializedMember.id; init = (loc, { Ast.StringLiteral.raw; comments; _ }) }) =
     initialized_member id (layout_node_with_comments_opt loc comments (Atom raw))
   in
+  let unknown_members has_unknown_members =
+    if has_unknown_members then
+      [Atom "..."]
+    else
+      []
+  in
+  let enum_internal_comments comments =
+    Base.Option.value_map
+      ~default:[]
+      ~f:(fun (_, _, layout) -> [layout])
+      (internal_comments comments)
+  in
   let body =
     match body with
-    | (loc, BooleanBody { BooleanBody.members; explicitType; comments }) ->
+    | (loc, BooleanBody { BooleanBody.members; explicit_type; has_unknown_members; comments }) ->
       fuse
         [
-          representation_type "boolean" explicitType;
+          representation_type "boolean" explicit_type;
           pretty_space;
           layout_node_with_comments_opt loc comments
           @@ wrap_body
-          @@ Base.List.map ~f:boolean_member members;
+          @@ Base.List.map ~f:boolean_member members
+          @ enum_internal_comments comments
+          @ unknown_members has_unknown_members;
         ]
-    | (loc, NumberBody { NumberBody.members; explicitType; comments }) ->
+    | (loc, NumberBody { NumberBody.members; explicit_type; has_unknown_members; comments }) ->
       fuse
         [
-          representation_type "number" explicitType;
+          representation_type "number" explicit_type;
           pretty_space;
           layout_node_with_comments_opt loc comments
           @@ wrap_body
-          @@ Base.List.map ~f:number_member members;
+          @@ Base.List.map ~f:number_member members
+          @ enum_internal_comments comments
+          @ unknown_members has_unknown_members;
         ]
-    | (loc, StringBody { StringBody.members; explicitType; comments }) ->
+    | (loc, StringBody { StringBody.members; explicit_type; has_unknown_members; comments }) ->
       fuse
         [
-          representation_type "string" explicitType;
+          representation_type "string" explicit_type;
           pretty_space;
-          ( layout_node_with_comments_opt loc comments
+          (layout_node_with_comments_opt loc comments
           @@ wrap_body
           @@
           match members with
-          | StringBody.Defaulted members -> Base.List.map ~f:defaulted_member members
-          | StringBody.Initialized members -> Base.List.map ~f:string_member members );
+          | StringBody.Defaulted members ->
+            Base.List.map ~f:defaulted_member members
+            @ enum_internal_comments comments
+            @ unknown_members has_unknown_members
+          | StringBody.Initialized members ->
+            Base.List.map ~f:string_member members
+            @ enum_internal_comments comments
+            @ unknown_members has_unknown_members);
         ]
-    | (loc, SymbolBody { SymbolBody.members; comments }) ->
+    | (loc, SymbolBody { SymbolBody.members; has_unknown_members; comments }) ->
       fuse
         [
           representation_type "symbol" true;
           pretty_space;
           layout_node_with_comments_opt loc comments
           @@ wrap_body
-          @@ Base.List.map ~f:defaulted_member members;
+          @@ Base.List.map ~f:defaulted_member members
+          @ enum_internal_comments comments
+          @ unknown_members has_unknown_members;
         ]
   in
   layout_node_with_comments_opt loc comments (fuse [Atom "enum"; space; identifier id; body])
@@ -2342,14 +2437,14 @@ and object_property ~opts property =
     let prefix =
       fuse
         [
-          ( if async then
+          (if async then
             fuse [Atom "async"; space]
           else
-            Empty );
-          ( if generator then
+            Empty);
+          (if generator then
             Atom "*"
           else
-            Empty );
+            Empty);
           s_key;
         ]
     in
@@ -2450,31 +2545,32 @@ and object_property ~opts property =
   | O.SpreadProperty (loc, { O.SpreadProperty.argument; comments }) ->
     source_location_with_comments ?comments (loc, fuse [Atom "..."; expression ~opts argument])
 
-and jsx_element ~opts loc { Ast.JSX.openingElement; closingElement; children; comments } =
+and jsx_element ~opts loc { Ast.JSX.opening_element; closing_element; children; comments } =
   layout_node_with_comments_opt loc comments
   @@ fuse
        [
          begin
-           match openingElement with
-           | (_, { Ast.JSX.Opening.selfClosing = false; _ }) -> jsx_opening ~opts openingElement
-           | (_, { Ast.JSX.Opening.selfClosing = true; _ }) -> jsx_self_closing ~opts openingElement
+           match opening_element with
+           | (_, { Ast.JSX.Opening.self_closing = false; _ }) -> jsx_opening ~opts opening_element
+           | (_, { Ast.JSX.Opening.self_closing = true; _ }) ->
+             jsx_self_closing ~opts opening_element
          end;
          jsx_children ~opts loc children;
          begin
-           match closingElement with
+           match closing_element with
            | Some closing -> jsx_closing closing
            | _ -> Empty
          end;
        ]
 
 and jsx_fragment
-    ~opts loc { Ast.JSX.frag_openingElement; frag_closingElement; frag_children; frag_comments } =
+    ~opts loc { Ast.JSX.frag_opening_element; frag_closing_element; frag_children; frag_comments } =
   layout_node_with_comments_opt loc frag_comments
   @@ fuse
        [
-         jsx_fragment_opening ~opts frag_openingElement;
+         jsx_fragment_opening ~opts frag_opening_element;
          jsx_children ~opts loc frag_children;
-         jsx_closing_fragment frag_closingElement;
+         jsx_closing_fragment frag_closing_element;
        ]
 
 and jsx_identifier (loc, { Ast.JSX.Identifier.name; comments }) =
@@ -2567,7 +2663,7 @@ and jsx_opening_attr ~opts = function
   | Ast.JSX.Opening.Attribute attr -> jsx_attribute ~opts attr
   | Ast.JSX.Opening.SpreadAttribute attr -> jsx_spread_attribute ~opts attr
 
-and jsx_opening ~opts (loc, { Ast.JSX.Opening.name; attributes; selfClosing = _ }) =
+and jsx_opening ~opts (loc, { Ast.JSX.Opening.name; attributes; self_closing = _ }) =
   jsx_opening_helper ~opts loc (Some name) attributes
 
 and jsx_fragment_opening ~opts loc = jsx_opening_helper ~opts loc None []
@@ -2581,15 +2677,15 @@ and jsx_opening_helper ~opts loc nameOpt attributes =
           (match nameOpt with
           | Some name -> jsx_element_name name
           | None -> Empty);
-          ( if attributes <> [] then
+          (if attributes <> [] then
             Layout.Indent
               (fuse [line; join pretty_line (Base.List.map ~f:(jsx_opening_attr ~opts) attributes)])
           else
-            Empty );
+            Empty);
           Atom ">";
         ] )
 
-and jsx_self_closing ~opts (loc, { Ast.JSX.Opening.name; attributes; selfClosing = _ }) =
+and jsx_self_closing ~opts (loc, { Ast.JSX.Opening.name; attributes; self_closing = _ }) =
   let attributes = Base.List.map ~f:(jsx_opening_attr ~opts) attributes in
   source_location_with_comments
     ( loc,
@@ -2597,10 +2693,10 @@ and jsx_self_closing ~opts (loc, { Ast.JSX.Opening.name; attributes; selfClosing
         [
           Atom "<";
           jsx_element_name name;
-          ( if attributes <> [] then
+          (if attributes <> [] then
             fuse [Layout.Indent (fuse [line; join pretty_line attributes]); pretty_line]
           else
-            pretty_space );
+            pretty_space);
           Atom "/>";
         ] )
 
@@ -2630,7 +2726,7 @@ and jsx_children ~opts loc (_children_loc, children) =
               | Some last_line when loc.start.line > last_line + 1 ->
                 fuse [pretty_hardline; Newline; child_n]
               (* If the current child and the previous child line positions are offset match
-           this via forcing a newline *)
+                 this via forcing a newline *)
               | Some last_line when loc.start.line > last_line ->
                 (* TODO: Remove the `Newline` hack, this forces newlines to exist
                    when using the compact printer *)
@@ -2660,13 +2756,13 @@ and jsx_child ~opts (loc, child) =
       | None -> None
     end
 
-and partition_specifiers default specifiers =
+and partition_specifiers ~opts default specifiers =
   let open Ast.Statement.ImportDeclaration in
   let (special, named) =
     match specifiers with
     | Some (ImportNamespaceSpecifier (loc, id)) -> ([import_namespace_specifier (loc, id)], None)
     | Some (ImportNamedSpecifiers named_specifiers) ->
-      ([], Some (import_named_specifiers named_specifiers))
+      ([], Some (import_named_specifiers ~opts named_specifiers))
     | None -> ([], None)
   in
   match default with
@@ -2692,17 +2788,19 @@ and import_named_specifier { Ast.Statement.ImportDeclaration.kind; local; remote
       | None -> Empty);
     ]
 
-and import_named_specifiers named_specifiers =
+and import_named_specifiers ~opts named_specifiers =
   group
     [
       new_list
         ~wrap:(Atom "{", Atom "}")
         ~sep:(Atom ",")
+        ~wrap_spaces:opts.bracket_spacing
         (Base.List.map ~f:import_named_specifier named_specifiers);
     ]
 
 and import_declaration
-    loc { Ast.Statement.ImportDeclaration.importKind; source; specifiers; default; comments } =
+    ~opts loc { Ast.Statement.ImportDeclaration.import_kind; source; specifiers; default; comments }
+    =
   let s_from = fuse [Atom "from"; pretty_space] in
   let module I = Ast.Statement.ImportDeclaration in
   layout_node_with_comments_opt loc comments
@@ -2711,13 +2809,13 @@ and import_declaration
           [
             Atom "import";
             begin
-              match importKind with
+              match import_kind with
               | I.ImportType -> fuse [space; Atom "type"]
               | I.ImportTypeof -> fuse [space; Atom "typeof"]
               | I.ImportValue -> Empty
             end;
             begin
-              match (partition_specifiers default specifiers, importKind) with
+              match (partition_specifiers ~opts default specifiers, import_kind) with
               (* No export specifiers *)
               (* `import 'module-name';` *)
               | (([], None), I.ImportValue) -> pretty_space
@@ -2733,14 +2831,14 @@ and import_declaration
               | ((special, Some named), _) ->
                 fuse [space; fuse_list ~sep:(Atom ",") (special @ [named]); pretty_space; s_from]
             end;
-            string_literal source;
+            string_literal ~opts source;
           ])
 
-and export_source ~prefix = function
-  | Some lit -> fuse [prefix; Atom "from"; pretty_space; string_literal lit]
+and export_source ~opts ~prefix = function
+  | Some lit -> fuse [prefix; Atom "from"; pretty_space; string_literal ~opts lit]
   | None -> Empty
 
-and export_specifier source =
+and export_specifier ~opts source =
   let open Ast.Statement.ExportNamedDeclaration in
   function
   | ExportSpecifiers specifiers ->
@@ -2751,6 +2849,7 @@ and export_specifier source =
             new_list
               ~wrap:(Atom "{", Atom "}")
               ~sep:(Atom ",")
+              ~wrap_spaces:opts.bracket_spacing
               (List.map
                  (fun (loc, { ExportSpecifier.local; exported }) ->
                    source_location_with_comments
@@ -2766,22 +2865,27 @@ and export_specifier source =
                          ] ))
                  specifiers);
           ];
-        export_source ~prefix:pretty_space source;
+        export_source ~opts ~prefix:pretty_space source;
       ]
   | ExportBatchSpecifier (loc, Some ident) ->
     fuse
       [
         source_location_with_comments
           (loc, fuse [Atom "*"; pretty_space; Atom "as"; space; identifier ident]);
-        export_source ~prefix:space source;
+        export_source ~opts ~prefix:space source;
       ]
   | ExportBatchSpecifier (loc, None) ->
-    fuse [source_location_with_comments (loc, Atom "*"); export_source ~prefix:pretty_space source]
+    fuse
+      [
+        source_location_with_comments (loc, Atom "*");
+        export_source ~opts ~prefix:pretty_space source;
+      ]
 
 and export_declaration
     ~opts
     loc
-    { Ast.Statement.ExportNamedDeclaration.declaration; specifiers; source; exportKind; comments } =
+    { Ast.Statement.ExportNamedDeclaration.declaration; specifiers; source; export_kind; comments }
+    =
   layout_node_with_comments_opt loc comments
   @@ fuse
        [
@@ -2794,12 +2898,12 @@ and export_declaration
                (fuse
                   [
                     begin
-                      match exportKind with
+                      match export_kind with
                       | Ast.Statement.ExportType -> fuse [space; Atom "type"]
                       | Ast.Statement.ExportValue -> Empty
                     end;
                     pretty_space;
-                    export_specifier source specifier;
+                    export_specifier ~opts source specifier;
                   ])
            | (_, _) -> failwith "Invalid export declaration"
          end;
@@ -2879,7 +2983,11 @@ and type_parameter ~opts (loc, { Ast.Type.TypeParams.params; comments }) =
         let param_layout = type_param ~opts param in
         (* Add trailing comma to last parameter *)
         let param_layout =
-          if i = num_params - 1 && internal_comments = [] then
+          if
+            i = num_params - 1
+            && internal_comments = []
+            && Trailing_commas.enabled_for_types opts.trailing_commas
+          then
             fuse [param_layout; if_break (Atom ",") Empty]
           else
             param_layout
@@ -2928,7 +3036,11 @@ and call_args ~opts ~is_new ~lparen (loc, { Ast.Expression.ArgList.arguments; co
         (* Add trailing comma to last argument *)
         let arg_layout = expression_or_spread ~opts arg in
         let arg_layout =
-          if i = num_args - 1 && internal_comments = [] then
+          if
+            i = num_args - 1
+            && internal_comments = []
+            && Trailing_commas.enabled_for_function_args opts.trailing_commas
+          then
             fuse [arg_layout; if_break (Atom ",") Empty]
           else
             arg_layout
@@ -2977,7 +3089,11 @@ and call_type_args ~opts ~less_than (loc, { Ast.Expression.CallTypeArgs.argument
         (* Add trailing comma to last argument *)
         let arg_layout = call_type_arg ~opts arg in
         let arg_layout =
-          if i = num_args - 1 && internal_comments = [] then
+          if
+            i = num_args - 1
+            && internal_comments = []
+            && Trailing_commas.enabled_for_types opts.trailing_commas
+          then
             fuse [arg_layout; if_break (Atom ",") Empty]
           else
             arg_layout
@@ -3015,7 +3131,11 @@ and type_args ~opts (loc, { Ast.Type.TypeArgs.arguments; comments }) =
         (* Add trailing comma to last argument *)
         let arg_layout = type_ ~opts arg in
         let arg_layout =
-          if i = num_args - 1 && internal_comments = [] then
+          if
+            i = num_args - 1
+            && internal_comments = []
+            && Trailing_commas.enabled_for_types opts.trailing_commas
+          then
             fuse [arg_layout; if_break (Atom ",") Empty]
           else
             arg_layout
@@ -3038,10 +3158,10 @@ and type_alias ~opts ~declare loc { Ast.Statement.TypeAlias.id; tparams; right; 
   @@ with_semicolon
        (fuse
           [
-            ( if declare then
+            (if declare then
               fuse [Atom "declare"; space]
             else
-              Empty );
+              Empty);
             Atom "type";
             space;
             identifier id;
@@ -3057,23 +3177,23 @@ and opaque_type
   layout_node_with_comments_opt loc comments
   @@ with_semicolon
        (fuse
-          ( [
-              ( if declare then
-                fuse [Atom "declare"; space]
-              else
-                Empty );
-              Atom "opaque type";
-              space;
-              identifier id;
-              option (type_parameter ~opts) tparams;
-            ]
+          ([
+             (if declare then
+               fuse [Atom "declare"; space]
+             else
+               Empty);
+             Atom "opaque type";
+             space;
+             identifier id;
+             option (type_parameter ~opts) tparams;
+           ]
           @ (match supertype with
             | Some t -> [Atom ":"; pretty_space; type_ ~opts t]
             | None -> [])
           @
           match impltype with
           | Some impltype -> [pretty_space; Atom "="; pretty_space; type_ ~opts impltype]
-          | None -> [] ))
+          | None -> []))
 
 and type_annotation ?(parens = false) ~opts (loc, t) =
   source_location_with_comments
@@ -3082,10 +3202,10 @@ and type_annotation ?(parens = false) ~opts (loc, t) =
         [
           Atom ":";
           pretty_space;
-          ( if parens then
+          (if parens then
             wrap_in_parens (type_ ~opts t)
           else
-            type_ ~opts t );
+            type_ ~opts t);
         ] )
 
 and type_predicate ~opts (loc, { Ast.Type.Predicate.kind; comments }) =
@@ -3124,10 +3244,10 @@ and type_union_or_intersection ~opts ~sep loc ts comments =
          let sep = fuse [sep; type_separator] in
          fuse
            [
-             ( if i = 0 then
+             (if i = 0 then
                IfBreak (sep, Empty)
              else
-               sep );
+               sep);
              type_with_parens ~opts t;
            ])
        ts)
@@ -3143,10 +3263,10 @@ and type_function_param ~opts (loc, { Ast.Type.Function.Param.name; annot; optio
               fuse
                 [
                   identifier id;
-                  ( if optional then
+                  (if optional then
                     Atom "?"
                   else
-                    Empty );
+                    Empty);
                   Atom ":";
                   pretty_space;
                 ]
@@ -3155,7 +3275,7 @@ and type_function_param ~opts (loc, { Ast.Type.Function.Param.name; annot; optio
           type_ ~opts annot;
         ] )
 
-and type_function_params ~opts (loc, { Ast.Type.Function.Params.params; rest; comments }) =
+and type_function_params ~opts (loc, { Ast.Type.Function.Params.this_; params; rest; comments }) =
   let params =
     Base.List.map
       ~f:(fun ((loc, _) as param) ->
@@ -3177,6 +3297,19 @@ and type_function_params ~opts (loc, { Ast.Type.Function.Params.params; rest; co
         (loc, Comment_attachment.function_type_rest_param_comment_bounds rest, rest_layout)
       in
       params @ [rest_param]
+    | None -> params
+  in
+  (* Add this constraint *)
+  let params =
+    match this_ with
+    | Some ((loc, { Ast.Type.Function.ThisParam.annot; comments = _ }) as this_) ->
+      let this_layout =
+        source_location_with_comments (loc, fuse [Atom "this"; type_annotation ~opts annot])
+      in
+      let this_constraint =
+        (loc, Comment_attachment.function_type_this_param_comment_bounds this_, this_layout)
+      in
+      this_constraint :: params
     | None -> params
   in
   let params_layout = list_with_newlines ~sep:(Atom ",") ~sep_linebreak:pretty_line params in
@@ -3237,10 +3370,10 @@ and type_object_property ~opts =
               s_proto;
               option variance variance_;
               object_property_key ~opts key;
-              ( if optional then
+              (if optional then
                 Atom "?"
               else
-                Empty );
+                Empty);
               Atom ":";
               pretty_space;
               type_ ~opts t;
@@ -3274,10 +3407,10 @@ and type_object_property ~opts =
       ( loc,
         fuse
           [
-            ( if static then
+            (if static then
               fuse [Atom "static"; space]
             else
-              Empty );
+              Empty);
             option variance variance_;
             Atom "[";
             begin
@@ -3297,10 +3430,10 @@ and type_object_property ~opts =
       ( loc,
         fuse
           [
-            ( if static then
+            (if static then
               fuse [Atom "static"; space]
             else
-              Empty );
+              Empty);
             source_location_with_comments
               (call_loc, type_function ~opts ~sep:(Atom ":") call_loc func);
           ] )
@@ -3310,17 +3443,17 @@ and type_object_property ~opts =
       ( loc,
         fuse
           [
-            ( if static then
+            (if static then
               fuse [Atom "static"; space]
             else
-              Empty );
+              Empty);
             Atom "[[";
             identifier id;
             Atom "]]";
-            ( if optional then
+            (if optional then
               Atom "?"
             else
-              Empty );
+              Empty);
             Atom ":";
             pretty_space;
             type_ ~opts value;
@@ -3346,23 +3479,19 @@ and type_object ?(sep = Atom ",") ~opts loc { Ast.Type.Object.exact; properties;
       loc
   in
   let num_props = List.length properties in
-  let internal_comments =
-    match internal_comments comments with
-    | None -> []
-    | Some comments -> [comments]
-  in
-  let props =
-    Base.List.mapi
+  let internal_comments = internal_comments comments in
+  let has_internal_comments = Base.Option.is_some internal_comments in
+  let rev_props =
+    Base.List.rev_mapi
       ~f:(fun i property ->
         let prop_layout =
           (* Add trailing comma to last property *)
-          if i = num_props - 1 && internal_comments = [] then
-            let sep =
-              if inexact then
-                sep
-              else
-                if_break sep Empty
-            in
+          if
+            i = num_props - 1
+            && (not (has_internal_comments || inexact))
+            && Trailing_commas.enabled_for_types opts.trailing_commas
+          then
+            let sep = if_break sep Empty in
             fuse [type_object_property ~opts property; sep]
           else
             type_object_property ~opts property
@@ -3372,26 +3501,47 @@ and type_object ?(sep = Atom ",") ~opts loc { Ast.Type.Object.exact; properties;
           prop_layout ))
       properties
   in
-  (* Add internal comments *)
-  let props = props @ internal_comments in
-  let props = list_with_newlines ~sep ~sep_linebreak props in
-  let props =
-    if inexact then
-      props @ [if_break sep_linebreak Empty; Atom "..."; if_break sep Empty]
-    else
-      props
+  (* Add internal comments and the inexact ellipsis *)
+  let rev_props =
+    match (internal_comments, inexact) with
+    | (Some (loc, junk, layout), true) ->
+      let has_trailing_line_comment =
+        match comments with
+        | Some { Ast.Syntax.internal; _ } ->
+          (match Base.List.rev internal with
+          | (_, { Ast.Comment.kind = Ast.Comment.Line; _ }) :: _ -> true
+          | _ -> false)
+        | None -> false
+      in
+      let linebreak =
+        if has_trailing_line_comment then
+          (* line comments have their own linebreak, so if the comment
+             right before the ellipsis is a line comment, don't add
+             another linebreak. *)
+          Empty
+        else
+          sep_linebreak
+      in
+      (loc, junk, fuse [layout; linebreak; Atom "..."]) :: rev_props
+    | (Some comments, false) -> comments :: rev_props
+    | (None, true) -> (loc, (None, None), Atom "...") :: rev_props
+    | (None, false) -> rev_props
   in
+  let props = Base.List.rev rev_props in
   (* If first prop is on a different line then pretty print with line breaks *)
   let break =
-    match properties with
+    match props with
     | [] -> None
-    | first_prop :: _ ->
-      if Loc.(loc.start.line < (prop_loc first_prop).start.line) then
+    | (first_loc, _, _) :: _ ->
+      if Loc.(loc.start.line < first_loc.start.line) then
         Some pretty_hardline
+      else if opts.bracket_spacing then
+        Some pretty_line
       else
         None
   in
   let props_layout =
+    let props = list_with_newlines ~sep ~sep_linebreak props in
     wrap_and_indent ?break (fuse [Atom "{"; s_exact], fuse [s_exact; Atom "}"]) props
   in
   layout_node_with_comments_opt loc comments @@ group [props_layout]
@@ -3433,6 +3583,17 @@ and type_generic ~opts loc { Ast.Type.Generic.id; targs; comments } =
   in
   layout_node_with_comments_opt loc comments
   @@ fuse [generic_identifier id; option (type_args ~opts) targs]
+
+and type_indexed_access
+    ?(optional = false) ~opts loc { Ast.Type.IndexedAccess._object; index; comments } =
+  let left_delim =
+    if optional then
+      Atom "?.["
+    else
+      Atom "["
+  in
+  layout_node_with_comments_opt loc comments
+  @@ fuse [type_ ~opts _object; left_delim; type_ ~opts index; Atom "]"]
 
 and type_nullable ~opts loc { Ast.Type.Nullable.argument; comments } =
   layout_node_with_comments_opt loc comments (fuse [Atom "?"; type_with_parens ~opts argument])
@@ -3492,6 +3653,9 @@ and type_ ~opts ((loc, t) : (Loc.t, Loc.t) Ast.Type.t) =
       | T.Interface i -> type_interface ~opts loc i
       | T.Array t -> type_array ~opts loc t
       | T.Generic generic -> type_generic ~opts loc generic
+      | T.IndexedAccess indexed_access -> type_indexed_access ~opts loc indexed_access
+      | T.OptionalIndexedAccess { T.OptionalIndexedAccess.indexed_access; optional } ->
+        type_indexed_access ~optional ~opts loc indexed_access
       | T.Union t -> type_union ~opts loc t
       | T.Intersection t -> type_intersection ~opts loc t
       | T.Typeof t -> type_typeof ~opts loc t
@@ -3665,7 +3829,7 @@ and declare_module ~opts loc { Ast.Statement.DeclareModule.id; body; kind = _; c
           begin
             match id with
             | Ast.Statement.DeclareModule.Identifier id -> identifier id
-            | Ast.Statement.DeclareModule.Literal lit -> string_literal lit
+            | Ast.Statement.DeclareModule.Literal lit -> string_literal ~opts lit
           end;
           pretty_space;
           block ~opts body;
@@ -3680,10 +3844,10 @@ and declare_export_declaration
       [
         Atom "export";
         space;
-        ( if Base.Option.is_some default then
+        (if Base.Option.is_some default then
           fuse [Atom "default"; space]
         else
-          Empty );
+          Empty);
       ]
   in
   match (declaration, specifiers) with
@@ -3726,6 +3890,12 @@ and declare_export_declaration
     source_location_with_comments
       ?comments
       ( loc,
-        fuse [Atom "declare"; space; Atom "export"; pretty_space; export_specifier source specifier]
-      )
+        fuse
+          [
+            Atom "declare";
+            space;
+            Atom "export";
+            pretty_space;
+            export_specifier ~opts source specifier;
+          ] )
   | (_, _) -> failwith "Invalid declare export declaration"

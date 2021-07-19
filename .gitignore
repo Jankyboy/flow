@@ -8,18 +8,23 @@ _build
 .DS_STORE
 docs/_site/
 _site/
-bin
+/bin
 npm-debug.log
 /node_modules/
 /tests/*/*.err
 *.swp
 *.swo
+*.o
+*.a
 flow.odocl
 flow.docdir
 *~
 /hack/utils/get_build_id.gen.c
 /flowlib.rc
 .merlin
-
+/test-results
+*.log
+*.cache
+.vscode/
 # This is an alias of flow-remove-types that we generate during publishing
 /packages/flow-node

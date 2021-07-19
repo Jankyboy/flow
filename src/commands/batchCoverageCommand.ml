@@ -134,10 +134,10 @@ let output_results ~root ~strip_root ~json ~pretty ~show_all ~trust stats =
             ("files", array_ file_list);
             ( "statistics",
               JSON_Object
-                ( [("files_in_directory", int_ num_files_in_dir)]
+                ([("files_in_directory", int_ num_files_in_dir)]
                 @ covered_expressions
                 @ [("total_expressions", int_ total)]
-                @ percentage ) );
+                @ percentage) );
           ]
       in
       print_json_endline ~pretty json_output)
@@ -207,7 +207,7 @@ let main
   let json = json || pretty in
   let request = ServerProt.Request.BATCH_COVERAGE { batch; wait_for_recheck; trust } in
   match connect_and_make_request flowconfig_name option_values root request with
-  | ServerProt.Response.BATCH_COVERAGE (Error msg) -> FlowExitStatus.(exit ~msg Unknown_error)
+  | ServerProt.Response.BATCH_COVERAGE (Error msg) -> Exit.(exit ~msg Unknown_error)
   | ServerProt.Response.BATCH_COVERAGE (Ok resp) ->
     output_results ~root ~strip_root ~json ~pretty ~show_all ~trust resp
   | response -> failwith_bad_response ~request ~response

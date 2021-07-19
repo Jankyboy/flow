@@ -9,7 +9,7 @@ module Ast = Flow_ast
 open Insert_type_utils
 
 type import_declaration = {
-  importKind: Ast.Statement.ImportDeclaration.importKind;
+  import_kind: Ast.Statement.ImportDeclaration.import_kind;
   source: Loc.t * Loc.t Ast.StringLiteral.t;
   default: (Loc.t, Loc.t) Ast.Identifier.t option;
   (* we only import this kind*)
@@ -25,7 +25,7 @@ module Modules = struct
     List.fold_left
       (fun acc (k, v) -> SMap.add k v acc)
       SMap.empty
-      Annotate_exports_hardcoded_module_fixes.files_to_modules
+      Hardcoded_module_fixes.files_to_modules
 
   (* Relativize module name if in the same folder, or use haste paths, or fail *)
   let resolve file module_name =
@@ -34,13 +34,26 @@ module Modules = struct
     | Modulename.Filename f ->
       let f = File_key.to_string f in
       let local_file = Filename.basename f in
-      let dep_folder = Filename.dirname f in
-      let this_folder = Filename.dirname (File_key.to_string file) in
-      if dep_folder = this_folder then
-        Filename.concat "./" local_file
+      (* Use hardcoded fix if there is one *)
+      if SMap.mem local_file paths then
+        SMap.find local_file paths
       else
-        let relative_dir = Files.relative_path this_folder dep_folder in
-        Path.to_string (Path.concat (Path.make relative_dir) local_file)
+        let dep_folder = Filename.dirname f in
+        let this_folder = Filename.dirname (File_key.to_string file) in
+        (* remove .flow extension if there is one *)
+        let local_file =
+          if Filename.extension local_file = "flow" then
+            Filename.chop_extension local_file
+          else
+            local_file
+        in
+        (* remove .js extension *)
+        let local_file = Filename.chop_extension local_file in
+        if dep_folder = this_folder then
+          Filename.concat "./" local_file
+        else
+          let relative_dir = Files.relative_path this_folder dep_folder in
+          Filename.concat relative_dir local_file
 end
 
 module AstHelper = struct
@@ -65,7 +78,7 @@ module AstHelper = struct
         in
         (None, Some { Ast.Statement.ImportDeclaration.kind = None; local; remote = remote_id })
     in
-    { importKind = import_kind; source; default; named_specifier }
+    { import_kind; source; default; named_specifier }
 
   let mk_import_declaration_kind use_mode =
     match use_mode with
@@ -75,145 +88,73 @@ end
 
 module ExportsHelper : sig
   type import_info = {
-    import_kind: Ast.Statement.ImportDeclaration.importKind;
+    import_kind: Ast.Statement.ImportDeclaration.import_kind;
     default: bool;
   }
 
   val resolve : use_mode -> ALoc.t -> string -> (import_info, Error.import_error) result
 end = struct
   type import_info = {
-    import_kind: Ast.Statement.ImportDeclaration.importKind;
+    import_kind: Ast.Statement.ImportDeclaration.import_kind;
     default: bool;
   }
 
-  open File_sig.With_Loc
+  open Type_sig
+  open Type_sig_collections
+  module P = Type_sig_pack
 
   (* NOTE The checks below are only based on the name. Ideally we'd also match
-   * with def_loc as well, but this is not available for every case. *)
+   * with def_loc as well. This was not available for every case originally,
+   * when this was based on types-first 1.0 export info. *)
 
-  let from_cjs_exports_def_list ~use_mode defs remote_name =
-    let open Ast.Expression in
-    match defs with
+  let packed_ref_name type_sig ref =
+    let { Packed_type_sig.Module.local_defs; remote_refs; _ } = type_sig in
+    match ref with
+    | P.LocalRef { index; _ } ->
+      let def = Local_defs.get local_defs index in
+      def_name def
+    | P.RemoteRef { index; _ } ->
+      let remote_ref = Remote_refs.get remote_refs index in
+      P.remote_ref_name remote_ref
+    | P.BuiltinRef { name; _ } -> name
+
+  let from_cjs_module_exports import_kind type_sig exports remote_name =
+    match exports with
     (* module.exports = C; *)
     (* module.exports = class C ...; *)
-    | [
-     SetModuleExportsDef
-       ( _,
-         ( Identifier (_, { Ast.Identifier.name; _ })
-         | Class { Ast.Class.id = Some (_, { Ast.Identifier.name; _ }); _ } ) );
-    ]
-      when remote_name = name (* heuristic *) ->
-      Some { import_kind = AstHelper.mk_import_declaration_kind use_mode; default = true }
-    (* module.exports = new C(); *)
-    | [
-     SetModuleExportsDef
-       ( _,
-         ( New
-             {
-               Ast.Expression.New.callee =
-                 (_, Ast.Expression.Identifier (_, { Ast.Identifier.name; _ }));
-               targs = None;
-               _;
-             }
-         (* A previous codemod iteration might add the following cast:
-          *   module.exports = (new C(): C);
-          * This catches this pattern. *)
-         | TypeCast
-             {
-               TypeCast.expression =
-                 ( _,
-                   New
-                     {
-                       Ast.Expression.New.callee =
-                         (_, Ast.Expression.Identifier (_, { Ast.Identifier.name; _ }));
-                       targs = None;
-                       _;
-                     } );
-               annot = _;
-               comments = _;
-             } ) );
-    ]
-      when remote_name = name ->
-      Some
-        {
-          (* This is the only way we can import this. *)
-          import_kind = Ast.Statement.ImportDeclaration.ImportTypeof;
-          default = true;
-        }
-    | [
-     SetModuleExportsDef
-       (_,  (* module.exports = { C, ... } *)
-       Object { Ast.Expression.Object.properties; _ });
-    ] ->
-      if
-        List.exists
-          (function
-            | Object.Property
-                ( _,
-                  Object.Property.Init
-                    { key = Object.Property.Identifier (_, { Ast.Identifier.name; _ }); _ } ) ->
-              remote_name = name
-            | _ -> false)
-          properties
-      then
-        Some { import_kind = AstHelper.mk_import_declaration_kind use_mode; default = false }
-      else
-        None
+    | Some (P.Ref ref) when packed_ref_name type_sig ref = remote_name ->
+      Some { import_kind; default = true }
+    (* module.exports = (new C(): C) *)
+    | Some (P.TyRef (P.Unqualified ref)) when packed_ref_name type_sig ref = remote_name ->
+      (* This is the only way we can import this. *)
+      let import_kind = Ast.Statement.ImportDeclaration.ImportTypeof in
+      Some { import_kind; default = true }
+    (* module.exports = { C, ... } *)
+    | Some (P.Value (ObjLit { props; _ })) when SMap.mem remote_name props ->
+      Some { import_kind; default = false }
     | _ -> None
 
-  let from_es_export_def_list ~use_mode defs remote_name =
-    if
-      List.exists
-        (function
-          | DeclareExportDef decl ->
-            Ast.Statement.(
-              (match decl with
-              | DeclareExportDeclaration.NamedType
-                  (_, { TypeAlias.id = (_, { Ast.Identifier.name; _ }); _ })
-              | DeclareExportDeclaration.NamedOpaqueType
-                  (_, { OpaqueType.id = (_, { Ast.Identifier.name; _ }); _ })
-              | DeclareExportDeclaration.Class
-                  (_, { DeclareClass.id = (_, { Ast.Identifier.name; _ }); _ }) ->
-                name = remote_name
-              | _ -> false))
-          | ExportNamedDef decl ->
-            Ast.Statement.(
-              (match decl with
-              | (_, TypeAlias { TypeAlias.id = (_, { Ast.Identifier.name; _ }); _ })
-              | (_, DeclareTypeAlias { TypeAlias.id = (_, { Ast.Identifier.name; _ }); _ })
-              | (_, OpaqueType { OpaqueType.id = (_, { Ast.Identifier.name; _ }); _ })
-              | (_, InterfaceDeclaration { Interface.id = (_, { Ast.Identifier.name; _ }); _ })
-              | (_, ClassDeclaration { Ast.Class.id = Some (_, { Ast.Identifier.name; _ }); _ })
-              | (_, DeclareClass { DeclareClass.id = (_, { Ast.Identifier.name; _ }); _ }) ->
-                name = remote_name
-              | _ -> false))
-          | ExportDefaultDef _ -> false)
-        defs
-    then
-      Some { import_kind = AstHelper.mk_import_declaration_kind use_mode; default = false }
+  let from_export_keys import_kind keys remote_name =
+    if Array.exists (String.equal remote_name) keys then
+      Some { import_kind; default = false }
     else
       None
 
-  let from_module_kind_info ~use_mode module_kind_info remote_name =
-    match module_kind_info with
-    | CommonJSInfo defs -> from_cjs_exports_def_list ~use_mode defs remote_name
-    | ESInfo defs -> from_es_export_def_list ~use_mode defs remote_name
-
-  let from_type_exports_named ~use_mode type_exports_named remote_name =
-    if
-      List.exists
-        (function
-          | (_name, (_, TypeExportNamed { loc = _; kind = NamedDeclaration })) -> false
-          | ( _,
-              ( _,
-                TypeExportNamed { loc = _; kind = NamedSpecifier { local = (_, name); source = _ } }
-              ) ) ->
-            name = remote_name)
-        type_exports_named
-    then
-      Some { import_kind = AstHelper.mk_import_declaration_kind use_mode; default = false }
-    else
-      None
+  let from_type_sig import_kind type_sig remote_name =
+    let { Packed_type_sig.Module.module_kind; _ } = type_sig in
+    match module_kind with
+    | P.CJSModule { exports; info = P.CJSModuleInfo { type_export_keys; _ }; _ } ->
+      Utils_js.lazy_seq
+        [
+          lazy (from_cjs_module_exports import_kind type_sig exports remote_name);
+          lazy (from_export_keys import_kind type_export_keys remote_name);
+        ]
+    | P.ESModule { info = P.ESModuleInfo { export_keys; type_export_keys; _ }; _ } ->
+      Utils_js.lazy_seq
+        [
+          lazy (from_export_keys import_kind export_keys remote_name);
+          lazy (from_export_keys import_kind type_export_keys remote_name);
+        ]
 
   (* NOTE Here we assume 'react' is available as a library *)
   let from_react loc =
@@ -230,43 +171,27 @@ end = struct
     else
       None
 
-  let from_exports_info ~use_mode exports_info loc remote_name =
-    let { module_sig; declare_modules = _; _ } = exports_info in
-    let { info; requires = _; module_kind = _; type_exports_named; type_exports_star = _ } =
-      module_sig
-    in
-    let { module_kind_info; type_exports_named_info } = info in
-    let import_info_opt =
-      Utils_js.lazy_seq
-        [
-          lazy (from_module_kind_info ~use_mode module_kind_info remote_name);
-          lazy (from_es_export_def_list ~use_mode type_exports_named_info remote_name);
-          lazy (from_type_exports_named ~use_mode type_exports_named remote_name);
-          lazy (from_react loc);
-          lazy (from_react_redux loc);
-        ]
-    in
-    match import_info_opt with
-    | Some import_info -> Ok import_info
-    | None -> Error (Error.No_matching_export (remote_name, loc))
-
-  let from_exports_info_result ~use_mode exports_info_result loc remote_name =
-    match exports_info_result with
-    | Error (IndeterminateModuleType _) -> Error Error.Indeterminate_module_type
-    | Ok (exports_info, _) -> from_exports_info ~use_mode exports_info loc remote_name
-
   (* Try to find out whether a given symbol is exported and what kind of import
    * we need to use for it. *)
   let resolve use_mode loc name =
-    File_sig.With_Loc.(
-      match ALoc.source loc with
-      | None -> Error Error.Loc_source_none
-      | Some remote_file ->
-        (match Parsing_heaps.Reader.get_ast ~reader:(State_reader.create ()) remote_file with
-        | None -> Error Error.Parsing_heaps_get_ast_error
-        | Some ast ->
-          let exports_info = program_with_exports_info ~ast ~module_ref_prefix:None in
-          from_exports_info_result ~use_mode exports_info loc name))
+    match ALoc.source loc with
+    | None -> Error Error.Loc_source_none
+    | Some remote_file ->
+      (match Parsing_heaps.Reader.get_type_sig ~reader:(State_reader.create ()) remote_file with
+      | None -> Error Error.Parsing_heaps_get_sig_error
+      | Some type_sig ->
+        let import_kind = AstHelper.mk_import_declaration_kind use_mode in
+        let import_info_opt =
+          Utils_js.lazy_seq
+            [
+              lazy (from_type_sig import_kind type_sig name);
+              lazy (from_react loc);
+              lazy (from_react_redux loc);
+            ]
+        in
+        (match import_info_opt with
+        | None -> Error (Error.No_matching_export (name, loc))
+        | Some import_info -> Ok import_info))
 end
 
 module ImportsHelper : sig
@@ -283,6 +208,8 @@ module ImportsHelper : sig
          method type_ : Ty.t -> (Ty.t, Error.kind) result
 
          method to_import_stmts : unit -> (Loc.t, Loc.t) Ast.Statement.t list
+
+         method to_import_bindings : (string * Autofix_imports.bindings) list
        end
 
   val imports_react : File_sig.With_ALoc.t -> bool
@@ -375,7 +302,14 @@ end = struct
        sym_def_loc;
        sym_name;
       } ->
-        let local_name = to_local_name ~iteration ~reserved_names index use_mode sym_name in
+        let local_name =
+          to_local_name
+            ~iteration
+            ~reserved_names
+            index
+            use_mode
+            (Reason.display_string_of_name sym_name)
+        in
         let import_mode =
           match use_mode with
           | ValueUseMode -> Ty.TypeofMode
@@ -385,7 +319,7 @@ end = struct
           Ty.sym_provenance =
             Ty.Remote { Ty.imported_as = Some (ALoc.none, local_name, import_mode) };
           sym_anonymous = false;
-          sym_name = local_name;
+          sym_name = Reason.OrdinaryName local_name;
           sym_def_loc;
         }
       | {
@@ -396,7 +330,14 @@ end = struct
       }
       (* Special-case react-redux. *)
         when is_react_redux_loc sym_def_loc ->
-        let local_name = to_local_name ~iteration ~reserved_names index use_mode sym_name in
+        let local_name =
+          to_local_name
+            ~iteration
+            ~reserved_names
+            index
+            use_mode
+            (Reason.display_string_of_name sym_name)
+        in
         let import_mode =
           match use_mode with
           | ValueUseMode -> Ty.TypeofMode
@@ -406,7 +347,7 @@ end = struct
           Ty.sym_provenance =
             Ty.Library { Ty.imported_as = Some (ALoc.none, local_name, import_mode) };
           sym_anonymous = false;
-          sym_name = local_name;
+          sym_name = Reason.OrdinaryName local_name;
           sym_def_loc;
         }
       | s -> s
@@ -442,22 +383,22 @@ end = struct
 
     val fold : (ImportInfo.t -> 'a -> 'a) -> t -> 'a -> 'a
   end = struct
-    type t = ImportInfo.t Nel.t SMap.t
+    type t = ImportInfo.t Nel.t NameUtils.Map.t
 
-    let empty = SMap.empty
+    let empty = NameUtils.Map.empty
 
     let add info m =
       let name = info.ImportInfo.remote.Ty.sym_name in
       let lst' =
-        match SMap.find_opt name m with
+        match NameUtils.Map.find_opt name m with
         | Some lst -> Nel.cons info lst
         | None -> Nel.one info
       in
-      SMap.add name lst' m
+      NameUtils.Map.add name lst' m
 
     let next_index remote_symbol mode x =
       let { Ty.sym_name; _ } = remote_symbol in
-      match SMap.find_opt sym_name x with
+      match NameUtils.Map.find_opt sym_name x with
       | None -> 0
       | Some lst ->
         let max_index =
@@ -472,15 +413,16 @@ end = struct
         in
         max_index + 1
 
-    let fold f x acc = SMap.fold (fun _ lst a -> Nel.fold_left (fun b y -> f y b) a lst) x acc
+    let fold f x acc =
+      NameUtils.Map.fold (fun _ lst a -> Nel.fold_left (fun b y -> f y b) a lst) x acc
 
     (* debug *)
     let _dump m =
-      SMap.bindings m
+      NameUtils.Map.bindings m
       |> List.map (fun (k, v) ->
              Utils_js.spf
                "'%s' ->\n%s\n"
-               k
+               (Reason.display_string_of_name k)
                (Nel.map ImportInfo.dump v |> Nel.to_list |> String.concat "\n"))
       |> String.concat "\n"
   end
@@ -498,7 +440,13 @@ end = struct
   module BatchImportMap = WrappedMap.Make (struct
     open Ast
 
-    type t = Statement.ImportDeclaration.importKind * (Loc.t * Loc.t StringLiteral.t)
+    type t = Statement.ImportDeclaration.import_kind * (Loc.t * Loc.t StringLiteral.t)
+
+    let compare = Stdlib.compare
+  end)
+
+  module BatchImportBindingsMap = WrappedMap.Make (struct
+    type t = Ast.Statement.ImportDeclaration.import_kind * string
 
     let compare = Stdlib.compare
   end)
@@ -521,7 +469,7 @@ end = struct
              * use `import type { ... } from 'react'` and hard-code the module string
              * here. *)
             if is_react_file_key remote_source then
-              Modulename.String "React"
+              Modulename.String "react"
             else if is_react_redux_file_key remote_source then
               Modulename.String "react-redux"
             else
@@ -531,6 +479,9 @@ end = struct
               info.Module_heaps.module_name
           | None -> failwith "No source"
         in
+        (* TODO we should probably give up if we are trying to generate an import statement with
+         * an internal name. However, to avoid a behavior change let's do the conversion for now. *)
+        let remote_name = Reason.display_string_of_name remote_name in
         ExportsHelper.resolve use_mode sym_def_loc remote_name
         >>| fun { ExportsHelper.import_kind; default } ->
         let source = Modules.resolve file module_name in
@@ -573,12 +524,12 @@ end = struct
               match t with
               | Ty.TypeOf
                   (Ty.TSymbol
-                    ( {
-                        Ty.sym_provenance =
-                          Ty.Remote { Ty.imported_as = None | Some (_, _, Ty.TypeMode) };
-                        sym_anonymous = false;
-                        _;
-                      } as s )) ->
+                    ({
+                       Ty.sym_provenance =
+                         Ty.Remote { Ty.imported_as = None | Some (_, _, Ty.TypeMode) };
+                       sym_anonymous = false;
+                       _;
+                     } as s)) ->
                 let local = self#convert_symbol ValueUseMode s in
                 Ty.Generic (local, Ty.ClassKind, None)
               | Ty.TypeOf
@@ -590,7 +541,12 @@ end = struct
                       _;
                     }) ->
                 let local =
-                  { Ty.sym_provenance = Ty.Local; sym_def_loc; sym_name; sym_anonymous = false }
+                  {
+                    Ty.sym_provenance = Ty.Local;
+                    sym_def_loc;
+                    sym_name = Reason.OrdinaryName sym_name;
+                    sym_anonymous = false;
+                  }
                 in
                 Ty.Generic (local, Ty.ClassKind, None)
               | _ -> super#on_t env t
@@ -612,7 +568,7 @@ end = struct
                 {
                   Ty.sym_provenance = Ty.Local;
                   sym_anonymous = false;
-                  sym_name = local_name;
+                  sym_name = Reason.OrdinaryName local_name;
                   sym_def_loc;
                 }
               (* react-redux *)
@@ -634,39 +590,38 @@ end = struct
                 {
                   Ty.sym_provenance = Ty.Local;
                   sym_anonymous = false;
-                  sym_name = local_name;
+                  sym_name = Reason.OrdinaryName local_name;
                   sym_def_loc;
                 }
               | _ -> super#on_symbol env s
           end
         in
-        fun ty ->
-          ( let old_name_map = name_map in
-            let old_symbol_cache = symbol_cache in
-            match covert_ty_visitor#on_t () ty with
-            | exception Import_exc err ->
-              (* NOTE If an error occurs, reset the imported symbols (name_map),
-               * but keep the cache to avoid duplicating work later. *)
-              name_map <- old_name_map;
-              symbol_cache <- old_symbol_cache;
-              Error (Error.Import_error err)
-            | ty' -> Ok ty'
-            : (Ty.t, Error.kind) result )
+        fun ty : (Ty.t, Error.kind) result ->
+          let old_name_map = name_map in
+          let old_symbol_cache = symbol_cache in
+          match covert_ty_visitor#on_t () ty with
+          | exception Import_exc err ->
+            (* NOTE If an error occurs, reset the imported symbols (name_map),
+             * but keep the cache to avoid duplicating work later. *)
+            name_map <- old_name_map;
+            symbol_cache <- old_symbol_cache;
+            Error (Error.Import_error err)
+          | ty' -> Ok ty'
 
       method to_import_stmts () : (Loc.t, Loc.t) Ast.Statement.t list =
         let dummy_loc = Loc.none in
         let (default_list, named_map) =
           ImportedNameMap.fold
             (fun { ImportInfo.import_declaration; _ } (default_acc, named_acc) ->
-              let { importKind; source; default; named_specifier } = import_declaration in
+              let { import_kind; source; default; named_specifier } = import_declaration in
               match (default, named_specifier) with
               | (None, Some named_specifier) ->
                 let named_specifiers =
-                  match BatchImportMap.find_opt (importKind, source) named_acc with
+                  match BatchImportMap.find_opt (import_kind, source) named_acc with
                   | Some named_specifiers -> named_specifier :: named_specifiers
                   | None -> [named_specifier]
                 in
-                (default_acc, BatchImportMap.add (importKind, source) named_specifiers named_acc)
+                (default_acc, BatchImportMap.add (import_kind, source) named_specifiers named_acc)
               | _ -> (import_declaration :: default_acc, named_acc))
             name_map
             ([], BatchImportMap.empty)
@@ -674,7 +629,7 @@ end = struct
         let import_stmts =
           List.map
             (fun import_declaration ->
-              let { importKind; source; default; named_specifier } = import_declaration in
+              let { import_kind; source; default; named_specifier } = import_declaration in
               let specifiers =
                 match named_specifier with
                 | Some specifer ->
@@ -684,7 +639,7 @@ end = struct
               ( dummy_loc,
                 Ast.Statement.ImportDeclaration
                   {
-                    Ast.Statement.ImportDeclaration.importKind;
+                    Ast.Statement.ImportDeclaration.import_kind;
                     source;
                     default;
                     specifiers;
@@ -694,7 +649,7 @@ end = struct
         in
         let import_stmts =
           BatchImportMap.fold
-            (fun (importKind, source) named_specifiers acc ->
+            (fun (import_kind, source) named_specifiers acc ->
               let specifiers =
                 Some (Ast.Statement.ImportDeclaration.ImportNamedSpecifiers named_specifiers)
               in
@@ -702,7 +657,7 @@ end = struct
                 ( dummy_loc,
                   Ast.Statement.ImportDeclaration
                     {
-                      Ast.Statement.ImportDeclaration.importKind;
+                      Ast.Statement.ImportDeclaration.import_kind;
                       source;
                       default = None;
                       specifiers;
@@ -714,6 +669,63 @@ end = struct
             import_stmts
         in
         import_stmts
+
+      method to_import_bindings : (string * Autofix_imports.bindings) list =
+        let (bindings, named_map) =
+          let open Ast.Identifier in
+          ImportedNameMap.fold
+            (fun {
+                   ImportInfo.import_declaration =
+                     {
+                       import_kind;
+                       source = (_, { Ast.StringLiteral.value = from; _ });
+                       default;
+                       named_specifier;
+                     };
+                   _;
+                 }
+                 (default_acc, named_acc) ->
+              match (default, named_specifier) with
+              | ( None,
+                  Some
+                    {
+                      Ast.Statement.ImportDeclaration.remote = (_, { name = remote_name; _ });
+                      local;
+                      _;
+                    } ) ->
+                let named_binding =
+                  {
+                    Autofix_imports.remote_name;
+                    local_name =
+                      (match local with
+                      | None -> None
+                      | Some (_, { name; _ }) -> Some name);
+                  }
+                in
+                let named_bindings =
+                  match BatchImportBindingsMap.find_opt (import_kind, from) named_acc with
+                  | Some named_bindings -> named_binding :: named_bindings
+                  | None -> [named_binding]
+                in
+                ( default_acc,
+                  BatchImportBindingsMap.add (import_kind, from) named_bindings named_acc )
+              | (Some (_, { name; _ }), _) ->
+                ((from, Autofix_imports.Default name) :: default_acc, named_acc)
+              | _ -> (default_acc, named_acc))
+            name_map
+            ([], BatchImportBindingsMap.empty)
+        in
+        let bindings =
+          BatchImportBindingsMap.fold
+            (fun (import_kind, from) named_bindings acc ->
+              match import_kind with
+              | Ast.Statement.ImportDeclaration.ImportType ->
+                (from, Autofix_imports.NamedType named_bindings) :: acc
+              | _ -> (from, Autofix_imports.Named named_bindings) :: acc)
+            named_map
+            bindings
+        in
+        bindings
     end
 
   exception Found_react_import

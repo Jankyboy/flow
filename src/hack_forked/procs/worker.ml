@@ -44,6 +44,7 @@ let worker_main ic oc =
   let start_major_words = ref 0. in
   let start_minor_collections = ref 0 in
   let start_major_collections = ref 0 in
+  let start_compactions = ref 0 in
   let start_wall_time = ref 0. in
   let start_proc_fs_status = ref None in
   let infd = Daemon.descr_of_in_channel ic in
@@ -59,6 +60,7 @@ let worker_main ic oc =
       major_words = end_major_words;
       minor_collections = end_minor_collections;
       major_collections = end_major_collections;
+      compactions = end_compactions;
       _;
     } =
       Gc.quick_stat ()
@@ -82,6 +84,7 @@ let worker_main ic oc =
 
     Measure.sample "minor_collections" (float (end_minor_collections - !start_minor_collections));
     Measure.sample "major_collections" (float (end_major_collections - !start_major_collections));
+    Measure.sample "compactions" (float (end_compactions - !start_compactions));
 
     begin
       match (!start_proc_fs_status, ProcFS.status_for_pid (Unix.getpid ())) with
@@ -96,8 +99,8 @@ let worker_main ic oc =
     WorkerCancel.set_on_worker_cancelled (fun () -> ());
     let len =
       Measure.time "worker_send_response" (fun () ->
-          try Marshal_tools.to_fd_with_preamble ~flags:[Marshal.Closures] outfd data
-          with Unix.Unix_error (Unix.EPIPE, _, _) -> raise Connection_closed)
+          try Marshal_tools.to_fd_with_preamble ~flags:[Marshal.Closures] outfd data with
+          | Unix.Unix_error (Unix.EPIPE, _, _) -> raise Connection_closed)
     in
     if len > 30 * 1024 * 1024 (* 30 MB *) then (
       Hh_logger.log
@@ -111,8 +114,8 @@ let worker_main ic oc =
 
     let stats = Measure.serialize (Measure.pop_global ()) in
     let _ =
-      try Marshal_tools.to_fd_with_preamble outfd stats
-      with Unix.Unix_error (Unix.EPIPE, _, _) -> raise Connection_closed
+      try Marshal_tools.to_fd_with_preamble outfd stats with
+      | Unix.Unix_error (Unix.EPIPE, _, _) -> raise Connection_closed
     in
     ()
   in
@@ -121,8 +124,8 @@ let worker_main ic oc =
       Measure.push_global ();
       let (Request do_process) =
         Measure.time "worker_read_request" (fun () ->
-            try Marshal_tools.from_fd_with_preamble infd
-            with End_of_file -> raise Connection_closed)
+            try Marshal_tools.from_fd_with_preamble infd with
+            | End_of_file -> raise Connection_closed)
       in
       WorkerCancel.set_on_worker_cancelled (fun () -> on_job_cancelled outfd);
       let tm = Unix.times () in
@@ -136,6 +139,7 @@ let worker_main ic oc =
       start_major_words := gc.Gc.major_words;
       start_minor_collections := gc.Gc.minor_collections;
       start_major_collections := gc.Gc.major_collections;
+      start_compactions := gc.Gc.compactions;
       start_wall_time := Unix.gettimeofday ();
       start_proc_fs_status := ProcFS.status_for_pid (Unix.getpid ()) |> Base.Result.ok;
       Mem_profile.start ();
@@ -143,10 +147,11 @@ let worker_main ic oc =
       exit 0
     with
     | Connection_closed -> exit 1
-    | SharedMem.Out_of_shared_memory -> FlowExitStatus.(exit Out_of_shared_memory)
-    | SharedMem.Hash_table_full -> FlowExitStatus.(exit Hash_table_full)
-    | SharedMem.Heap_full -> FlowExitStatus.(exit Heap_full)
-  with e ->
+    | SharedMem.Out_of_shared_memory -> Exit.(exit Out_of_shared_memory)
+    | SharedMem.Hash_table_full -> Exit.(exit Hash_table_full)
+    | SharedMem.Heap_full -> Exit.(exit Heap_full)
+  with
+  | e ->
     let exn = Exception.wrap e in
     let e_str =
       Printf.sprintf
@@ -254,4 +259,5 @@ let unix_worker_main restore (state, controller_fd) (ic, oc) =
           exit 3)
     done;
     assert false
-  with End_of_file -> exit 0
+  with
+  | End_of_file -> exit 0

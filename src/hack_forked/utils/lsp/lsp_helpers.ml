@@ -91,6 +91,9 @@ let pos_compare (p1 : position) (p2 : position) : int =
   else
     p1.character - p2.character
 
+let ranges_overlap (a : range) (b : range) =
+  not (pos_compare a.end_ b.start < 0 || pos_compare a.start b.end_ > 0)
+
 (* Given a "selection" range A..B and a "squiggle" range a..b, how do they overlap?
  * There are 12 ways to order the four letters ABab, of which six
  * satisfy both A<=B and a<=b. Here they are. *)
@@ -264,6 +267,9 @@ let supports_codeActionKinds (p : Lsp.Initialize.params) : CodeActionKind.t list
   | Some { CodeActionLiteralSupport.valueSet } -> valueSet
   | None -> []
 
+let supports_configuration (p : Lsp.Initialize.params) : bool =
+  Lsp.Initialize.(p.client_capabilities.workspace.configuration)
+
 let supports_status (p : Lsp.Initialize.params) : bool =
   Lsp.Initialize.(p.client_capabilities.window.status)
 
@@ -272,6 +278,9 @@ let supports_snippets (p : Lsp.Initialize.params) : bool =
 
 let supports_preselect (p : Lsp.Initialize.params) : bool =
   Lsp.Initialize.(p.client_capabilities.textDocument.completion.completionItem.preselectSupport)
+
+let supports_completion_item_label_details (p : Lsp.Initialize.params) : bool =
+  Lsp.Initialize.(p.client_capabilities.textDocument.completion.completionItem.labelDetailsSupport)
 
 let supports_connectionStatus (p : Lsp.Initialize.params) : bool =
   Lsp.Initialize.(p.client_capabilities.telemetry.connectionStatus)
@@ -307,7 +316,7 @@ let dismiss_diagnostics (writer : Jsonrpc.writer) (diagnostic_uris : UriSet.t) :
 let notify_connectionStatus
     (p : Lsp.Initialize.params) (writer : Jsonrpc.writer) (wasConnected : bool) (isConnected : bool)
     : bool =
-  ( if supports_connectionStatus p && wasConnected <> isConnected then
+  (if supports_connectionStatus p && wasConnected <> isConnected then
     let message = { Lsp.ConnectionStatus.isConnected } in
-    message |> print_connectionStatus |> Jsonrpc.notify writer "telemetry/connectionStatus" );
+    message |> print_connectionStatus |> Jsonrpc.notify writer "telemetry/connectionStatus");
   isConnected

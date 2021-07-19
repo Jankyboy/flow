@@ -35,7 +35,9 @@ exception FailedToKillNicely
 let main base_flags temp_dir quiet root () =
   let flowconfig_name = base_flags.Base_flags.flowconfig_name in
   let root = guess_root flowconfig_name root in
-  let config = read_config_or_exit (Server_files_js.config_file flowconfig_name root) in
+  let config =
+    read_config_or_exit ~enforce_warnings:false (Server_files_js.config_file flowconfig_name root)
+  in
   let root_s = Path.to_string root in
   let tmp_dir =
     match temp_dir with
@@ -74,9 +76,10 @@ let main base_flags temp_dir quiet root () =
           done;
           if not quiet then
             prerr_endlinef "Successfully killed server for `%s`" (Path.to_string root)
-        with FailedToKillNicely ->
+        with
+        | FailedToKillNicely ->
           let msg = spf "Failed to kill server nicely for `%s`" root_s in
-          FlowExitStatus.(exit ~msg Kill_error)
+          Exit.(exit ~msg Kill_error)
       end
     | Error Server_missing ->
       if not quiet then prerr_endlinef "Warning: no server to kill for `%s`" root_s
@@ -92,14 +95,15 @@ let main base_flags temp_dir quiet root () =
           CommandMeanKill.mean_kill ~flowconfig_name ~tmp_dir root;
           if not quiet then
             prerr_endlinef "Successfully killed server for `%s`" (Path.to_string root)
-        with CommandMeanKill.FailedToKill err ->
+        with
+        | CommandMeanKill.FailedToKill err ->
           if not quiet then (
             match err with
             | Some err -> prerr_endline err
             | None ->
               ();
               let msg = spf "Failed to kill server meanly for `%s`" root_s in
-              FlowExitStatus.(exit ~msg Kill_error)
+              Exit.(exit ~msg Kill_error)
           )
       end)
 

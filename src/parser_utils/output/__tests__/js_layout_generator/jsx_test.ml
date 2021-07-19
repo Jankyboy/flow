@@ -109,10 +109,10 @@ let tests =
     ( "borderline_length_with_children" >:: fun ctxt ->
       (* opening tag is 80 columns. if it's indented, make sure it breaks.
 
-      <aaaaaaaaaaaaa bbbb="cccccccccccccccccccccccccccccccccccc" ddddd="eeeeeeeeeeee">
-        <f />
-      </aaaaaaaaaaaaa>
-    *)
+         <aaaaaaaaaaaaa bbbb="cccccccccccccccccccccccccccccccccccc" ddddd="eeeeeeeeeeee">
+           <f />
+         </aaaaaaaaaaaaa>
+      *)
       let a_loc = make_loc 1 4 in
       let f_loc = make_loc 2 2 in
       let ast =
@@ -184,39 +184,39 @@ let tests =
         layout;
       assert_output
         ~ctxt
-        ( {|<aaaaaaaaaaaaa bbbb="cccccccccccccccccccccccccccccccccccc"ddddd="eeeeeeeeeeee">|}
+        ({|<aaaaaaaaaaaaa bbbb="cccccccccccccccccccccccccccccccccccc"ddddd="eeeeeeeeeeee">|}
         ^ {|<f/>|}
-        ^ {|</aaaaaaaaaaaaa>|} )
+        ^ {|</aaaaaaaaaaaaa>|})
         layout;
       assert_output
         ~ctxt
         ~pretty:true
-        ( {|<aaaaaaaaaaaaa bbbb="cccccccccccccccccccccccccccccccccccc" ddddd="eeeeeeeeeeee">|}
+        ({|<aaaaaaaaaaaaa bbbb="cccccccccccccccccccccccccccccccccccc" ddddd="eeeeeeeeeeee">|}
         ^ "\n"
         ^ {|  <f />|}
         ^ "\n"
-        ^ {|</aaaaaaaaaaaaa>|} )
+        ^ {|</aaaaaaaaaaaaa>|})
         layout;
 
       let block_layout = Js_layout_generator.statement ~opts (S.block [S.expression ast]) in
       assert_output
         ~ctxt
-        ( "{"
+        ("{"
         ^ "<aaaaaaaaaaaaa bbbb=\"cccccccccccccccccccccccccccccccccccc\"ddddd=\"eeeeeeeeeeee\">"
         ^ "<f/>"
         ^ "</aaaaaaaaaaaaa>"
-        ^ "}" )
+        ^ "}")
         block_layout;
       assert_output
         ~ctxt
         ~pretty:true
-        ( "{\n"
+        ("{\n"
         ^ "  <aaaaaaaaaaaaa\n"
         ^ "    bbbb=\"cccccccccccccccccccccccccccccccccccc\"\n"
         ^ "    ddddd=\"eeeeeeeeeeee\">\n"
         ^ "    <f />\n"
         ^ "  </aaaaaaaaaaaaa>;\n"
-        ^ "}" )
+        ^ "}")
         block_layout );
     ( "long_child_text" >:: fun ctxt ->
       assert_expression_string ~ctxt ~pretty:true ("<A a=\"a\">\n  " ^ String.make 80 'b' ^ "\n</A>")

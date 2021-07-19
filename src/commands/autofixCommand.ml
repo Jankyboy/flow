@@ -44,9 +44,9 @@ module InsertType = struct
                  "--strategy"
                  (required ~default:Generalize (enum ambiguity_strategies))
                  ~doc:
-                   ( "Set how to resolve ambiguity in possible types ("
+                   ("Set how to resolve ambiguity in possible types ("
                    ^ ambiguity_strategies_list
-                   ^ ")" )
+                   ^ ")")
             |> flag
                  "--in-place"
                  no_arg
@@ -59,13 +59,13 @@ module InsertType = struct
             |> anon "args" (required (list_of string)));
       })
 
-  let handle_error ?(code = FlowExitStatus.Unknown_error) msg = FlowExitStatus.(exit ~msg code)
+  let handle_error ?(code = Exit.Unknown_error) msg = Exit.(exit ~msg code)
 
   let rec parse_args args : Loc.t =
     let parse_pos line col : Loc.position =
       let (line, column) =
-        try convert_input_pos (int_of_string line, int_of_string col)
-        with Failure _ -> handle_error "flow autofix insert-type: failed to parse position"
+        try convert_input_pos (int_of_string line, int_of_string col) with
+        | Failure _ -> handle_error "flow autofix insert-type: failed to parse position"
       in
       Loc.{ line; column }
     in
@@ -89,9 +89,9 @@ module InsertType = struct
     | (true, Some p, _)
     | (true, None, Some p) ->
       begin
-        try open_out p
-        with _ ->
-          handle_error ~code:FlowExitStatus.Path_is_not_a_file
+        try open_out p with
+        | _ ->
+          handle_error ~code:Exit.Path_is_not_a_file
           @@ Printf.sprintf "failed to open output file: %s" p
       end
     | (true, None, None) ->
@@ -184,7 +184,7 @@ module Exports = struct
           |> anon "file" (required string));
     }
 
-  let handle_error ?(code = FlowExitStatus.Unknown_error) msg = FlowExitStatus.(exit ~msg code)
+  let handle_error ?(code = Exit.Unknown_error) msg = Exit.(exit ~msg code)
 
   let select_output_channel in_place path source_path =
     match (in_place, path, source_path) with
@@ -192,9 +192,9 @@ module Exports = struct
     | (true, Some p, _)
     | (true, None, p) ->
       begin
-        try open_out p
-        with _ ->
-          handle_error ~code:FlowExitStatus.Path_is_not_a_file
+        try open_out p with
+        | _ ->
+          handle_error ~code:Exit.Path_is_not_a_file
           @@ Printf.sprintf "failed to open output file: %s" p
       end
 

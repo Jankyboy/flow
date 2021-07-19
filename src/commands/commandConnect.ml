@@ -56,7 +56,6 @@ let start_flow_server env =
   } =
     env
   in
-  if not quiet then Utils_js.prerr_endlinef "Launching Flow server for %s" (Path.to_string root);
   let exe = Sys.executable_name in
   let args =
     [Path.to_string root]
@@ -76,19 +75,20 @@ let start_flow_server env =
     in
     match Sys_utils.waitpid_non_intr [] server_pid with
     | (_, Unix.WEXITED 0) -> Ok ()
-    | (_, Unix.WEXITED code) when code = FlowExitStatus.(error_code Lock_stolen) ->
-      Error ("Lock stolen", FlowExitStatus.Lock_stolen)
+    | (_, Unix.WEXITED code) when code = Exit.(error_code Lock_stolen) ->
+      Error ("Lock stolen", Exit.Lock_stolen)
     | (_, status) ->
       let msg = "Could not start Flow server!" in
-      Error (msg, FlowExitStatus.Server_start_failed status)
-  with exn ->
+      Error (msg, Exit.Server_start_failed status)
+  with
+  | exn ->
     let exn = Exception.wrap exn in
     let msg =
       Printf.sprintf
         "Could not start Flow server! Unexpected exception: %s"
         (Exception.to_string exn)
     in
-    Error (msg, FlowExitStatus.Unknown_error)
+    Error (msg, Exit.Unknown_error)
 
 type retry_info = {
   retries_remaining: int;
@@ -123,14 +123,14 @@ let consume_retry retries =
  * initialization, etc *)
 let rec connect ~flowconfig_name ~client_handshake env retries start_time =
   let connect = connect ~flowconfig_name in
-  ( if retries.retries_remaining < 0 then
-    FlowExitStatus.(exit ~msg:"\nOut of retries, exiting!" Out_of_retries) );
+  (if retries.retries_remaining < 0 then
+    Exit.(exit ~msg:"\nOut of retries, exiting!" Out_of_retries));
   let has_timed_out =
     match env.expiry with
     | None -> false
     | Some t -> Unix.gettimeofday () > t
   in
-  (if has_timed_out then FlowExitStatus.(exit ~msg:"\nTimeout exceeded, exiting" Out_of_time));
+  (if has_timed_out then Exit.(exit ~msg:"\nTimeout exceeded, exiting" Out_of_time));
   let retries = { retries with last_connect_time = Unix.gettimeofday () } in
   let conn = CCS.connect_once ~flowconfig_name ~client_handshake ~tmp_dir:env.tmp_dir env.root in
   if Tty.spinner_used () then Tty.print_clear_line stderr;
@@ -151,10 +151,10 @@ let rec connect ~flowconfig_name ~client_handshake env retries start_time =
         "The flow server %s (%d %s remaining): %s%!"
         busy_reason
         retries.retries_remaining
-        ( if retries.retries_remaining = 1 then
+        (if retries.retries_remaining = 1 then
           "retry"
         else
-          "retries" )
+          "retries")
         (Tty.spinner ());
     connect ~client_handshake env (consume_retry retries) start_time
   | Error CCS.(Build_id_mismatch Server_exited) ->
@@ -171,7 +171,7 @@ let rec connect ~flowconfig_name ~client_handshake env retries start_time =
       connect ~client_handshake env retries start_time
     ) else
       let msg = "\n" ^ msg in
-      FlowExitStatus.(exit ~msg Build_id_mismatch)
+      Exit.(exit ~msg Build_id_mismatch)
   | Error CCS.(Build_id_mismatch (Client_should_error { server_bin; server_version })) ->
     if env.rerun_on_mismatch then (
       if not env.quiet then (
@@ -191,7 +191,7 @@ let rec connect ~flowconfig_name ~client_handshake env retries start_time =
           server_version
           Flow_version.version
       in
-      FlowExitStatus.(exit ~msg Build_id_mismatch)
+      Exit.(exit ~msg Build_id_mismatch)
   | Error CCS.Server_socket_missing ->
     begin
       try
@@ -202,7 +202,8 @@ let rec connect ~flowconfig_name ~client_handshake env retries start_time =
           Utils_js.prerr_endlinef "Successfully killed server for `%s`" (Path.to_string env.root);
         let start_time = Unix.gettimeofday () in
         handle_missing_server ~flowconfig_name ~client_handshake env retries start_time
-      with CommandMeanKill.FailedToKill err ->
+      with
+      | CommandMeanKill.FailedToKill err ->
         begin
           if not env.quiet then
             match err with
@@ -210,35 +211,37 @@ let rec connect ~flowconfig_name ~client_handshake env retries start_time =
             | None -> ()
         end;
         let msg = Utils_js.spf "Failed to kill server for `%s`" (Path.to_string env.root) in
-        FlowExitStatus.(exit ~msg Kill_error)
+        Exit.(exit ~msg Kill_error)
     end
 
 and handle_missing_server ~flowconfig_name ~client_handshake env retries start_time =
-  if env.autostart then
+  if env.autostart then (
+    if not env.quiet then
+      Utils_js.prerr_endlinef "Launching Flow server for %s" (Path.to_string env.root);
     let retries =
       match start_flow_server env with
       | Ok () ->
         if not env.quiet then Printf.eprintf "Started a new flow server: %s%!" (Tty.spinner ());
         retries
-      | Error (_, FlowExitStatus.Lock_stolen) ->
+      | Error (_, Exit.Lock_stolen) ->
         if not env.quiet then
           Printf.eprintf
             "Failed to start a new flow server (%d %s remaining): %s%!"
             retries.retries_remaining
-            ( if retries.retries_remaining = 1 then
+            (if retries.retries_remaining = 1 then
               "retry"
             else
-              "retries" )
+              "retries")
             (Tty.spinner ());
         consume_retry retries
-      | Error (msg, code) -> FlowExitStatus.exit ~msg code
+      | Error (msg, code) -> Exit.exit ~msg code
     in
     connect ~flowconfig_name ~client_handshake env retries start_time
-  else
+  ) else
     let msg =
       Utils_js.spf "\nError: There is no Flow server running in '%s'." (Path.to_string env.root)
     in
-    FlowExitStatus.(exit ~msg No_server_running)
+    Exit.(exit ~msg No_server_running)
 
 let connect ~flowconfig_name ~client_handshake env =
   let start_time = Unix.gettimeofday () in

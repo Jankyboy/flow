@@ -5,14 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-exception Timeout
-
-exception Watchman_error of string
-
-exception Subscription_canceled_by_watchman
-
-exception Watchman_restarted
-
 type subscribe_mode =
   | All_changes
   | Defer_changes
@@ -36,8 +28,8 @@ type init_settings = {
   sync_timeout: int option;
 }
 
-type clock = string
 (** The message's clock. *)
+type clock = string
 
 type pushed_changes =
   (*
@@ -64,50 +56,36 @@ type changes =
   | Watchman_unavailable
   | Watchman_pushed of pushed_changes
 
+type mergebase_and_changes = {
+  clock: clock;
+  mergebase: string;
+  changes: SSet.t;
+}
+
+type failure =
+  | Dead
+  | Restarted
+
 type env
-
-type dead_env
-
-(* This has to be repeated because they depend on the abstract types. *)
-type watchman_instance =
-  | Watchman_dead of dead_env
-  | Watchman_alive of env
-
-type conn
 
 val init : init_settings -> env option Lwt.t
 
-val get_changes_since_mergebase : timeout:timeout -> env -> string list Lwt.t
+val get_mergebase_and_changes : env -> (mergebase_and_changes, failure) Result.t Lwt.t
 
-val get_mergebase :
-  timeout:timeout ->
-  watchman_instance ->
-  (watchman_instance * (string, string) Pervasives.result) Lwt.t
-
-val get_mergebase_and_changes :
-  timeout:timeout ->
-  watchman_instance ->
-  (watchman_instance * (string * SSet.t, string) Pervasives.result) Lwt.t
-
-val get_changes : ?deadline:float -> watchman_instance -> (watchman_instance * changes) Lwt.t
-
-val conn_of_instance : watchman_instance -> conn option
+val get_changes : env -> (env * pushed_changes, failure) Result.t Lwt.t
 
 val close : env -> unit Lwt.t
 
-val with_instance :
-  watchman_instance ->
-  try_to_restart:bool ->
-  on_alive:(env -> 'a Lwt.t) ->
-  on_dead:(dead_env -> 'a Lwt.t) ->
-  'a Lwt.t
+val force_update_clockspec : clock -> env -> unit
 
 (* Expose some things for testing. *)
 module Testing : sig
+  type error_kind
+
   val get_test_env : unit -> env Lwt.t
 
   val test_settings : init_settings
 
   val transform_asynchronous_get_changes_response :
-    env -> Hh_json.json option -> env * pushed_changes
+    env -> Hh_json.json -> (env * pushed_changes, error_kind) Result.t
 end

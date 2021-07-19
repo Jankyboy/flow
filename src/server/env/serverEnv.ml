@@ -48,6 +48,8 @@ type env = {
   dependency_info: Dependency_info.t;
   (* All the current files we typecheck. *)
   checked_files: CheckedSet.t;
+  (* package.json files *)
+  package_json_files: File_key.t list;
   ordered_libs: string list;
   (* The lib files, in their merge order *)
   libs: SSet.t;
@@ -58,4 +60,5 @@ type env = {
   coverage: Coverage_response.file_coverage Utils_js.FilenameMap.t;
   collated_errors: collated_errors option ref;
   connections: Persistent_connection.t;
+  exports: Export_search.t;
 }

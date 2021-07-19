@@ -22,14 +22,15 @@ let get_cmdline (pid : int) : (string, string) result =
     try
       let line = Str.global_replace cmdline_delimiter_re " " (Disk.cat cmdline_path) in
       Ok line
-    with e ->
+    with
+    | e ->
       let error =
         Printf.sprintf "No 'cmdline' file found for PID %d: '%s'" pid (Printexc.to_string e)
       in
       Error error
 
 (* Takes a PID and returns the information about the process, including
-  the name and the PID of the parent process (PPID) *)
+   the name and the PID of the parent process (PPID) *)
 let get_proc_stat (pid : int) : (proc_stat, string) result =
   (* NOTE: Linux's OS type is Unix *)
   if Sys.os_type <> "Unix" then
@@ -40,19 +41,23 @@ let get_proc_stat (pid : int) : (proc_stat, string) result =
       let stat = Scanf.Scanning.from_string (Disk.cat stat_path) in
       try
         let record =
-          Scanf.bscanf stat "%d (%s@) %c %d" (fun _my_pid _comm _state ppid ->
-              ( match get_cmdline pid with
-                | Ok cmdline -> Ok { cmdline; ppid }
-                | Error err -> Error err
-                : (proc_stat, string) result ))
+          Scanf.bscanf
+            stat
+            "%d (%s@) %c %d"
+            (fun _my_pid _comm _state ppid : (proc_stat, string) result ->
+              match get_cmdline pid with
+              | Ok cmdline -> Ok { cmdline; ppid }
+              | Error err -> Error err)
         in
         record
-      with e ->
+      with
+      | e ->
         let error =
           Printf.sprintf "Error reading 'stat' for PID %d: %s" pid (Printexc.to_string e)
         in
         Error error
-    with e ->
+    with
+    | e ->
       let error =
         Printf.sprintf "No 'stat' file found for PID %d: '%s'" pid (Printexc.to_string e)
       in

@@ -8,6 +8,6 @@ lib.js
 [lints]
 
 [options]
-types_first=false
+experimental.abstract_locations=false
 
 [strict]

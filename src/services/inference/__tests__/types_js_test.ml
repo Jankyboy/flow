@@ -64,19 +64,22 @@ let dummy_options_flags =
     no_flowlib = false;
     profile = false;
     quiet = false;
-    saved_state_fetcher = None;
-    saved_state_force_recheck = false;
-    saved_state_no_fallback = false;
     strip_root = false;
     temp_dir = None;
     traces = None;
     trust_mode = None;
-    new_signatures = false;
     abstract_locations = true;
     verbose = None;
     wait_for_recheck = None;
     weak = false;
     include_suppressions = false;
+  }
+
+let dummy_saved_state_flags =
+  {
+    CommandUtils.Saved_state_flags.saved_state_fetcher = None;
+    saved_state_force_recheck = false;
+    saved_state_no_fallback = false;
   }
 
 let test_with_profiling test_fun ctxt =
@@ -101,10 +104,12 @@ let make_options () =
   let root = Path.dummy_path in
   CommandUtils.make_options
     ~flowconfig_name:".flowconfig"
+    ~flowconfig_hash:""
     ~flowconfig
     ~lazy_mode:None
     ~root
-    dummy_options_flags
+    ~options_flags:dummy_options_flags
+    ~saved_state_options_flags:dummy_saved_state_flags
 
 let prepare_freshparsed freshparsed =
   freshparsed |> Base.List.map ~f:make_fake_file_key |> FilenameSet.of_list
@@ -203,9 +208,9 @@ let include_dependencies_and_dependents
 (* There is memory sampling embedded throughout the code under test. It polls the shared memory
  * system to get information about its usage. If the shared memory system is not initialized, we get
  * crashes, so we have to initialize it before running tests. *)
-let sharedmem_config = { SharedMem_js.heap_size = 1024 * 1024; hash_table_pow = 19; log_level = 0 }
+let sharedmem_config = { SharedMem.heap_size = 1024 * 1024; hash_table_pow = 19; log_level = 0 }
 
-let _ = SharedMem_js.init sharedmem_config ~num_workers:1
+let _ = SharedMem.init sharedmem_config ~num_workers:1
 
 let tests =
   "types_js"

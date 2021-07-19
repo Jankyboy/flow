@@ -25,6 +25,7 @@ let spec =
         empty
         |> CommandUtils.json_flags
         |> CommandUtils.from_flag
+        |> flag "--binary" no_arg ~doc:"Return only the binary"
         |> flag "--semver" no_arg ~doc:"Return only the version number"
         |> anon "root" (optional string));
   }
@@ -37,9 +38,20 @@ let print_semver json pretty =
   else
     print_endline Flow_version.version
 
-let main json pretty semver _root () =
+let print_binary json pretty =
+  let binary = Sys_utils.executable_path () in
+  if json || pretty then
+    Hh_json.(
+      let json = JSON_Object [("binary", JSON_String binary)] in
+      print_json_endline ~pretty json)
+  else
+    print_endline binary
+
+let main json pretty binary semver _root () =
   if semver then
     print_semver json pretty
+  else if binary then
+    print_binary json pretty
   else if json || pretty then
     Hh_json.(
       let json =
@@ -54,6 +66,6 @@ let main json pretty semver _root () =
       print_json_endline ~pretty json)
   else
     CommandUtils.print_version ();
-  FlowExitStatus.(exit No_error)
+  Exit.(exit No_error)
 
 let command = CommandSpec.command spec main

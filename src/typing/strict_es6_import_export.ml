@@ -55,11 +55,11 @@ let rec is_require =
 let has_value_import =
   let open Ast.Statement.ImportDeclaration in
   function
-  | { importKind = ImportValue; specifiers = Some (ImportNamedSpecifiers specifiers); _ } ->
+  | { import_kind = ImportValue; specifiers = Some (ImportNamedSpecifiers specifiers); _ } ->
     List.exists
       (fun { Ast.Statement.ImportDeclaration.kind; _ } -> kind = None || kind = Some ImportValue)
       specifiers
-  | { importKind = ImportValue; _ } -> true
+  | { import_kind = ImportValue; _ } -> true
   | _ -> false
 
 (* Gather information about top level declarations to be used when checking for import/export errors. *)
@@ -95,14 +95,14 @@ let gather_declarations ast =
             (* Gather all identifiers in variable declaration *)
             let acc =
               Flow_ast_utils.fold_bindings_of_pattern
-                (fun acc (id_loc, { Ast.Identifier.name; _ }) ->
+                (fun acc (id_loc, { Ast.Identifier.name; _ }) _ ->
                   add_var_decl acc id_loc loc name kind)
                 acc
                 id
             in
             (* Gather simple variable declarations where the init is a function, of the forms:
-             const <ID> = function() { ... }
-             const <ID> = () => { ... } *)
+               const <ID> = function() { ... }
+               const <ID> = () => { ... } *)
             let acc =
               match (id, init) with
               | ( (_, Ast.Pattern.Identifier { Ast.Pattern.Identifier.name = (id_loc, _); _ }),
@@ -188,8 +188,8 @@ class import_export_visitor ~cx ~scope_info ~declarations =
     method private add_this_in_exported_function_error loc =
       this#add_error (Error_message.EThisInExportedFunction loc)
 
-    method private add_export_named_default_error loc name =
-      this#add_error (Error_message.EExportRenamedDefault (loc, name))
+    method private add_export_named_default_error loc name is_reexport =
+      this#add_error (Error_message.EExportRenamedDefault { loc; name; is_reexport })
 
     method private import_star_from_use =
       (* Create a map from import star use locs to the import star specifier *)
@@ -359,7 +359,7 @@ class import_export_visitor ~cx ~scope_info ~declarations =
 
     method! jsx_element elem_loc elem =
       let open Ast.JSX in
-      let { openingElement = (_, { Opening.name; _ }); _ } = elem in
+      let { opening_element = (_, { Opening.name; _ }); _ } = elem in
       begin
         match name with
         (* Error on use of module object outside member expression *)
@@ -374,7 +374,7 @@ class import_export_visitor ~cx ~scope_info ~declarations =
     method! export_named_declaration loc decl =
       let open Ast.Statement in
       let open ExportNamedDeclaration in
-      let { declaration; specifiers; _ } = decl in
+      let { declaration; specifiers; source; _ } = decl in
       (* Only const variables can be exported *)
       begin
         match declaration with
@@ -410,7 +410,9 @@ class import_export_visitor ~cx ~scope_info ~declarations =
               begin
                 match exported with
                 | Some (_, { Ast.Identifier.name = "default"; _ }) ->
-                  this#add_export_named_default_error spec_loc name
+                  this#add_export_named_default_error spec_loc (Some name) (source <> None)
+                | None when name = "default" && source <> None ->
+                  this#add_export_named_default_error spec_loc None true
                 | _ -> ()
               end;
               match Scopes.def_of_use_opt scope_info id_loc with
@@ -422,7 +424,9 @@ class import_export_visitor ~cx ~scope_info ~declarations =
                   | Some
                       { decl_loc; name; kind = VariableDeclaration.Var | VariableDeclaration.Let }
                     ->
-                    this#add_non_const_var_export_error id_loc (Some (decl_loc, name))
+                    this#add_non_const_var_export_error
+                      id_loc
+                      (Some (decl_loc, Reason.OrdinaryName name))
                   | _ -> ()
                 end;
                 (* Check for `this` if exported variable is bound to a function *)
@@ -457,24 +461,19 @@ let detect_mixed_import_and_require_error cx declarations =
   | _ -> ()
 
 let detect_errors_from_ast cx ast =
-  let scope_info = Scope_builder.With_ALoc.program ast in
+  let scope_info = Scope_builder.With_ALoc.program ~with_types:true ast in
   let declarations = gather_declarations ast in
   detect_mixed_import_and_require_error cx declarations;
   let visitor = new import_export_visitor ~cx ~scope_info ~declarations in
   ignore (visitor#program ast)
 
-let detect_errors ~metadata ~phase cx results =
+let detect_errors cx metadata results =
   if metadata.Context.strict_es6_import_export then
-    match phase with
-    | Context.Checking ->
-      let excludes =
-        Base.List.map ~f:Str.regexp metadata.Context.strict_es6_import_export_excludes
-      in
-      Base.List.iter
-        ~f:(fun (ctx, ast, _) ->
-          let file_key = Context.file ctx in
-          let file_str = File_key.to_string file_key |> Sys_utils.normalize_filename_dir_sep in
-          let excluded = Base.List.exists ~f:(fun r -> Str.string_match r file_str 0) excludes in
-          if not excluded then detect_errors_from_ast cx ast)
-        results
-    | _ -> ()
+    let excludes = Base.List.map ~f:Str.regexp metadata.Context.strict_es6_import_export_excludes in
+    Base.List.iter
+      ~f:(fun (ctx, ast, _) ->
+        let file_key = Context.file ctx in
+        let file_str = File_key.to_string file_key |> Sys_utils.normalize_filename_dir_sep in
+        let excluded = Base.List.exists ~f:(fun r -> Str.string_match r file_str 0) excludes in
+        if not excluded then detect_errors_from_ast cx ast)
+      results

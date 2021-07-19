@@ -14,8 +14,11 @@ type 'a change' =
       leading_separator: bool;
     }
   | Delete of 'a
+[@@deriving show]
 
-type 'a change = Loc.t * 'a change'
+type 'a change = Loc.t * 'a change' [@@deriving show]
+
+type 'a changes = 'a change list [@@deriving show]
 
 (* Algorithm to use to compute diff. Trivial algorithm just compares lists pairwise and generates
    replacements to convert one to the other. Standard is more computationally intensive but will
@@ -23,6 +26,13 @@ type 'a change = Loc.t * 'a change'
 type diff_algorithm =
   | Trivial
   | Standard
+
+type expression_node_parent =
+  | StatementParent of (Loc.t, Loc.t) Flow_ast.Statement.t
+  | ExpressionParent of (Loc.t, Loc.t) Flow_ast.Expression.t
+  | SlotParent
+  | SpreadParent
+[@@deriving show]
 
 type node =
   | Raw of string
@@ -34,7 +44,7 @@ type node =
   | BooleanLiteral of Loc.t * Loc.t Flow_ast.BooleanLiteral.t
   | Statement of (Loc.t, Loc.t) Flow_ast.Statement.t
   | Program of (Loc.t, Loc.t) Flow_ast.Program.t
-  | Expression of (Loc.t, Loc.t) Flow_ast.Expression.t
+  | Expression of ((Loc.t, Loc.t) Flow_ast.Expression.t * expression_node_parent)
   | Pattern of (Loc.t, Loc.t) Flow_ast.Pattern.t
   | Params of (Loc.t, Loc.t) Flow_ast.Function.Params.t
   | Variance of Loc.t Flow_ast.Variance.t
@@ -47,6 +57,7 @@ type node =
   | TemplateLiteral of Loc.t * (Loc.t, Loc.t) Flow_ast.Expression.TemplateLiteral.t
   | JSXChild of (Loc.t, Loc.t) Flow_ast.JSX.child
   | JSXIdentifier of (Loc.t, Loc.t) Flow_ast.JSX.Identifier.t
+[@@deriving show]
 
 (* Diffs the given ASTs using referential equality to determine whether two nodes are different.
  * This works well for transformations based on Flow_ast_mapper, which preserves identity, but it
@@ -55,7 +66,7 @@ val program :
   diff_algorithm ->
   (Loc.t, Loc.t) Flow_ast.Program.t ->
   (Loc.t, Loc.t) Flow_ast.Program.t ->
-  node change list
+  node changes
 
 (* Diffs two lists and produces an edit script. This is exposed only for testing purposes *)
 type 'a diff_result = int * 'a change'

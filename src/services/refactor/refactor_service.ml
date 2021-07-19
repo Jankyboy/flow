@@ -46,9 +46,9 @@ class rename_mapper refs new_name =
       else
         (loc, { property with key = key' })
 
-    method! pattern_object_property ?kind (prop : (Loc.t, Loc.t) Ast.Pattern.Object.Property.t') =
+    method! pattern_object_property ?kind (prop : (Loc.t, Loc.t) Ast.Pattern.Object.Property.t) =
       let open Ast.Pattern.Object.Property in
-      let { key; pattern; default; shorthand } = prop in
+      let (loc, { key; pattern; default; shorthand }) = prop in
       if not shorthand then
         super#pattern_object_property prop
       else
@@ -78,7 +78,7 @@ class rename_mapper refs new_name =
           prop
         else
           (* TODO if both changed (e.g. destructuring requires) then retain shorthand *)
-          { key = key'; pattern = pattern'; default = default'; shorthand = false }
+          (loc, { key = key'; pattern = pattern'; default = default'; shorthand = false })
 
     method! object_property (prop : (Loc.t, Loc.t) Ast.Expression.Object.Property.t) =
       let open Ast.Expression.Object.Property in
@@ -147,7 +147,7 @@ let apply_rename_to_files ~reader refs_by_file new_name =
     begin
       fun file refs acc ->
       acc >>= fun edits ->
-      FindRefsUtils.get_ast_result ~reader file >>| fun (ast, _, _) ->
+      FindRefsUtils.get_ast_result ~reader file >>| fun (ast, _, _, _) ->
       let file_edits = apply_rename_to_file file ast refs new_name in
       List.rev_append file_edits edits
     end

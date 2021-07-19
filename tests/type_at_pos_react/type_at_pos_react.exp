@@ -36,18 +36,15 @@ create_class.js:31:7 =
     ...
   }
 create_class.js:31:7,31:20
-create_class_state.js:16:5 = React$Component<any, State> | any
+create_class_state.js:16:5 = mixed
 create_class_state.js:16:5,16:8
-lazy_ref.js:14:9 = {|default: React$AbstractComponent<empty, {|moo: (x: string) => void|}>|}
+lazy_ref.js:14:9 = {|default: React$AbstractComponent<empty, {|moo(x: string): void|}>|}
 lazy_ref.js:14:9,14:9
 lazy_ref.js:19:9 = Promise<{|default: React$AbstractComponent<empty, void>|}>
 lazy_ref.js:19:9,19:9
 react_component.js:3:9 = module "react" {
   declare var version: string;
-  declare var useTransition: (config: ?TimeoutConfig) => [
-    (() => void) => void,
-    boolean
-  ];
+  declare var useTransition: () => [boolean, (() => void) => void];
   declare var useState: <S>(initialState: ((() => S) | S)) => [
     S,
     ((((S) => S) | S)) => void
@@ -68,7 +65,7 @@ react_component.js:3:9 = module "react" {
   declare var useMemo: <T>(create: () => T, inputs: ?$ReadOnlyArray<mixed>) => T;
   declare var useLayoutEffect: (
     create: () => MaybeCleanUpFn,
-    inputs: ?$ReadOnlyArray<mixed>
+    inputs?: ?$ReadOnlyArray<mixed>
   ) => void;
   declare var useImperativeHandle: <T>(
     ref: ?({current: (T | null), ...} | ((inst: (T | null)) => mixed)),
@@ -77,18 +74,16 @@ react_component.js:3:9 = module "react" {
   ) => void;
   declare var useEffect: (
     create: () => MaybeCleanUpFn,
-    inputs: ?$ReadOnlyArray<mixed>
+    inputs?: ?$ReadOnlyArray<mixed>
   ) => void;
-  declare var useDeferredValue: <T>(value: T, config: ?TimeoutConfig) => T;
+  declare var useDeferredValue: <T>(value: T) => T;
   declare var useDebugValue: (value: any) => void;
-  declare var useContext: <T>(
-    context: React$Context<T>,
-    observedBits: (void | number | boolean)
-  ) => T;
+  declare var useContext: <T>(context: React$Context<T>) => T;
   declare var useCallback: <T: (...args: $ReadOnlyArray<empty>) => mixed>(
     callback: T,
     inputs: ?$ReadOnlyArray<mixed>
   ) => T;
+  declare var startTransition: (() => void) => void;
   declare var memo: <Config, Instance = mixed>(
     component: React$AbstractComponent<Config, Instance>,
     equal?: (Config, Config) => boolean
@@ -123,6 +118,8 @@ react_component.js:3:9 = module "react" {
     componentName: string,
     getStack: ?(() => ?string)
   ) => void;
+  type TransportValue = React$TransportValue;
+  type TransportObject = React$TransportObject;
   declare var Suspense: React$ComponentType<
     {children?: React$Node, fallback?: React$Node, ...},
   >;
@@ -154,19 +151,19 @@ react_component.js:3:9 = module "react" {
   class React$Component<Props, State = void>;
   type ChildrenArray<+T> = $ReadOnlyArray<ChildrenArray<T>> | T;
   declare var Children: {
-    +count: (children: ChildrenArray<any>) => number,
-    +forEach: <T>(
+    count(children: ChildrenArray<any>): number,
+    forEach<T, This>(
       children: ChildrenArray<T>,
       fn: (child: T, index: number) => mixed,
-      thisArg?: mixed
-    ) => void,
-    +map: <T, U>(
+      thisArg: This
+    ): void,
+    map<T, U, This>(
       children: ChildrenArray<T>,
       fn: (child: $NonMaybeType<T>, index: number) => U,
-      thisArg?: mixed
-    ) => Array<$NonMaybeType<U>>,
-    +only: <T>(children: ChildrenArray<T>) => $NonMaybeType<T>,
-    +toArray: <T>(children: ChildrenArray<T>) => Array<$NonMaybeType<T>>,
+      thisArg: This
+    ): Array<$NonMaybeType<U>>,
+    only<T>(children: ChildrenArray<T>): $NonMaybeType<T>,
+    toArray<T>(children: ChildrenArray<T>): Array<$NonMaybeType<T>>,
     ...
   };
   type AbstractComponent<-Config, +Instance = mixed> = React$AbstractComponent<
@@ -178,16 +175,16 @@ react_component.js:3:9 = module "react" {
 react_component.js:3:7,3:11
 react_component.js:13:33 = class React$Component<Props, State = void>
 react_component.js:13:29,13:37
-react_component.js:18:17 = {|enabled: boolean|}
+react_component.js:18:17 = State
 react_component.js:18:14,18:18
 react_component.js:31:7 = {
   "expanded_type":{
     "kind":"Generic",
     "type":{
-      "provenance":{"kind":"Library (Remote)","loc":"[LIB] react.js:222:35-80"},
+      "provenance":{"kind":"Library (Remote)","loc":"[LIB] react.js:240:35-80"},
       "name":"React$FragmentType"
     },
-    "kind":"type alias"
+    "generic_kind":"type alias"
   },
   "type":"React$FragmentType",
   "reasons":[],
@@ -208,10 +205,10 @@ react_component.js:32:13 = {
     "kind":"Generic",
     "typeArgs":[{"kind":"Num"}],
     "type":{
-      "provenance":{"kind":"Library (Remote)","loc":"[LIB] react.js:256:23-35"},
+      "provenance":{"kind":"Library (Remote)","loc":"[LIB] react.js:274:23-35"},
       "name":"ComponentType"
     },
-    "kind":"type alias"
+    "generic_kind":"type alias"
   },
   "type":"ComponentType<number>",
   "reasons":[],
@@ -231,7 +228,7 @@ react_component.js:32:29 = {
   "expanded_type":{
     "kind":"TypeAlias",
     "name":{
-      "provenance":{"kind":"Library (Remote)","loc":"[LIB] react.js:256:23-35"},
+      "provenance":{"kind":"Library (Remote)","loc":"[LIB] react.js:274:23-35"},
       "name":"ComponentType"
     },
     "typeParams":[{"name":"P","bound":null,"polarity":"Negative"}],
@@ -239,10 +236,10 @@ react_component.js:32:29 = {
       "kind":"Generic",
       "typeArgs":[{"kind":"Bound","bound":"P"}],
       "type":{
-        "provenance":{"kind":"Library (Remote)","loc":"[LIB] react.js:159:14-32"},
+        "provenance":{"kind":"Library (Remote)","loc":"[LIB] react.js:177:14-32"},
         "name":"React$ComponentType"
       },
-      "kind":"type alias"
+      "generic_kind":"type alias"
     }
   },
   "type":"type ComponentType<-P> = React$ComponentType<P>",

@@ -14,19 +14,9 @@ external is_nfs : string -> bool = "hh_is_nfs"
 external is_apple_os : unit -> bool = "hh_sysinfo_is_apple_os"
 
 (** Option type intead of exception throwing. *)
-let get_env name = (try Some (Sys.getenv name) with Not_found -> None)
-
-let getenv_user () =
-  let user_var =
-    if Sys.win32 then
-      "USERNAME"
-    else
-      "USER"
-  in
-  let logname_var = "LOGNAME" in
-  let user = get_env user_var in
-  let logname = get_env logname_var in
-  Base.Option.first_some user logname
+let get_env name =
+  try Some (Sys.getenv name) with
+  | Not_found -> None
 
 let getenv_home () =
   let home_var =
@@ -66,43 +56,43 @@ let getenv_path () =
   get_env path_var
 
 let open_in_no_fail fn =
-  try open_in fn
-  with e ->
+  try open_in fn with
+  | e ->
     let e = Printexc.to_string e in
     Printf.fprintf stderr "Could not open_in: '%s' (%s)\n" fn e;
     exit 3
 
 let open_in_bin_no_fail fn =
-  try open_in_bin fn
-  with e ->
+  try open_in_bin fn with
+  | e ->
     let e = Printexc.to_string e in
     Printf.fprintf stderr "Could not open_in_bin: '%s' (%s)\n" fn e;
     exit 3
 
 let close_in_no_fail fn ic =
-  try close_in ic
-  with e ->
+  try close_in ic with
+  | e ->
     let e = Printexc.to_string e in
     Printf.fprintf stderr "Could not close: '%s' (%s)\n" fn e;
     exit 3
 
 let open_out_no_fail fn =
-  try open_out fn
-  with e ->
+  try open_out fn with
+  | e ->
     let e = Printexc.to_string e in
     Printf.fprintf stderr "Could not open_out: '%s' (%s)\n" fn e;
     exit 3
 
 let open_out_bin_no_fail fn =
-  try open_out_bin fn
-  with e ->
+  try open_out_bin fn with
+  | e ->
     let e = Printexc.to_string e in
     Printf.fprintf stderr "Could not open_out_bin: '%s' (%s)\n" fn e;
     exit 3
 
 let close_out_no_fail fn oc =
-  try close_out oc
-  with e ->
+  try close_out oc with
+  | e ->
     let e = Printexc.to_string e in
     Printf.fprintf stderr "Could not close: '%s' (%s)\n" fn e;
     exit 3
@@ -132,7 +122,8 @@ let split_lines = Str.split nl_regexp
 let string_contains str substring =
   (* regexp_string matches only this string and nothing else. *)
   let re = Str.regexp_string substring in
-  (try Str.search_forward re str 0 >= 0 with Not_found -> false)
+  try Str.search_forward re str 0 >= 0 with
+  | Not_found -> false
 
 let exec_read cmd =
   let ic = Unix.open_process_in cmd in
@@ -147,7 +138,8 @@ let exec_read_lines ?(reverse = false) cmd =
      while true do
        result := input_line ic :: !result
      done
-   with End_of_file -> ());
+   with
+  | End_of_file -> ());
   assert (Unix.close_process_in ic = Unix.WEXITED 0);
   if not reverse then
     List.rev !result
@@ -199,30 +191,6 @@ let restart () =
   let argv = Sys.argv in
   Unix.execv cmd argv
 
-let logname_impl () =
-  match getenv_user () with
-  | Some user -> user
-  | None ->
-    (* If this function is generally useful, it can be lifted to toplevel
-         in this file, but this is the only place we need it for now. *)
-    let exec_try_read cmd =
-      let ic = Unix.open_process_in cmd in
-      let out = (try Some (input_line ic) with End_of_file -> None) in
-      let status = Unix.close_process_in ic in
-      match (out, status) with
-      | (Some _, Unix.WEXITED 0) -> out
-      | _ -> None
-    in
-    (try Utils.unsafe_opt (exec_try_read "logname")
-     with Invalid_argument _ ->
-       (try Utils.unsafe_opt (exec_try_read "id -un") with Invalid_argument _ -> "[unknown]"))
-
-let logname_ref = ref None
-
-let logname () =
-  if !logname_ref = None then logname_ref := Some (logname_impl ());
-  Utils.unsafe_opt !logname_ref
-
 let with_umask umask f =
   let old_umask = ref 0 in
   Utils.with_context
@@ -246,7 +214,8 @@ let read_stdin_to_string () =
       Buffer.add_char buf '\n'
     done;
     assert false
-  with End_of_file -> Buffer.contents buf
+  with
+  | End_of_file -> Buffer.contents buf
 
 let read_all ?(buf_size = 4096) ic =
   let buf = Buffer.create buf_size in
@@ -257,7 +226,8 @@ let read_all ?(buf_size = 4096) ic =
        if bytes_read = 0 then raise Exit;
        Buffer.add_subbytes buf data 0 bytes_read
      done
-   with Exit -> ());
+   with
+  | Exit -> ());
   Buffer.contents buf
 
 (**
@@ -281,7 +251,8 @@ let expanduser path =
           | Some home -> home
         end
       | unixname ->
-        (try (Unix.getpwnam unixname).Unix.pw_dir with Not_found -> Str.matched_string s)
+        (try (Unix.getpwnam unixname).Unix.pw_dir with
+        | Not_found -> Str.matched_string s)
     end
     path
 
@@ -337,7 +308,10 @@ let executable_path : unit -> string =
 
 let lines_of_in_channel ic =
   let rec loop accum =
-    match (try Some (input_line ic) with _ -> None) with
+    match
+      try Some (input_line ic) with
+      | _ -> None
+    with
     | None -> List.rev accum
     | Some line -> loop (line :: accum)
   in
@@ -349,7 +323,8 @@ let lines_of_file filename =
     let result = lines_of_in_channel ic in
     let _ = close_in ic in
     result
-  with _ ->
+  with
+  | _ ->
     close_in ic;
     []
 
@@ -385,7 +360,8 @@ let try_touch ~follow_symlinks file =
       Unix.utimes file 0.0 0.0
     else
       lutimes file
-  with _ -> ()
+  with
+  | _ -> ()
 
 let mkdir_p ?(skip_mocking = false) =
   if skip_mocking then
@@ -398,15 +374,19 @@ let mkdir_no_fail dir =
   with_umask 0 (fun () ->
       (* Don't set sticky bit since the socket opening code wants to remove any
        * old sockets it finds, which may be owned by a different user. *)
-      try Unix.mkdir dir 0o777 with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
+      try Unix.mkdir dir 0o777 with
+      | Unix.Unix_error (Unix.EEXIST, _, _) -> ())
 
-let unlink_no_fail fn = (try Unix.unlink fn with Unix.Unix_error (Unix.ENOENT, _, _) -> ())
+let unlink_no_fail fn =
+  try Unix.unlink fn with
+  | Unix.Unix_error (Unix.ENOENT, _, _) -> ()
 
 let readlink_no_fail fn =
   if Sys.win32 && Sys.file_exists fn then
     cat fn
   else
-    try Unix.readlink fn with _ -> fn
+    try Unix.readlink fn with
+    | _ -> fn
 
 let splitext filename =
   let root = Filename.chop_extension filename in
@@ -420,7 +400,8 @@ let is_test_mode () =
   try
     ignore @@ Sys.getenv "HH_TEST_MODE";
     true
-  with _ -> false
+  with
+  | _ -> false
 
 let sleep ~seconds = ignore @@ Unix.select [] [] [] seconds
 
@@ -588,8 +569,8 @@ external processor_info : unit -> processor_info = "hh_processor_info"
  * around EINTR which continues the select if it gets interrupted by a signal *)
 let rec select_non_intr read write exn timeout =
   let start_time = Unix.gettimeofday () in
-  try Unix.select read write exn timeout
-  with Unix.Unix_error (Unix.EINTR, _, _) ->
+  try Unix.select read write exn timeout with
+  | Unix.Unix_error (Unix.EINTR, _, _) ->
     (* Negative timeouts mean no timeout *)
     let timeout =
       if timeout < 0.0 then
@@ -603,17 +584,24 @@ let rec select_non_intr read write exn timeout =
  * an EINTR when the forked process dies and the parent gets a sigchld signal. Note: this is only a
  * problem if you're not using the WNOHANG flag, since EINTR isn't thrown for WNOHANG *)
 let rec waitpid_non_intr flags pid =
-  try Unix.waitpid flags pid with Unix.Unix_error (Unix.EINTR, _, _) -> waitpid_non_intr flags pid
+  try Unix.waitpid flags pid with
+  | Unix.Unix_error (Unix.EINTR, _, _) -> waitpid_non_intr flags pid
 
 (* Exposing this for a unit test *)
 let find_oom_in_dmesg_output pid name lines =
-  let re = Str.regexp (Printf.sprintf "Out of memory: Kill process \\([0-9]+\\) (%s)" name) in
+  (* oomd: "Memory cgroup out of memory: Killed process 4083583 (flow)" (https://facebookmicrosites.github.io/oomd/)
+     oomkiller: "Out of memory: Kill process 4083583 (flow)" *)
+  let re =
+    Str.regexp (Printf.sprintf "[Oo]ut of memory: Kill\\(ed\\)? process \\([0-9]+\\) (%s)" name)
+  in
+  let pid = string_of_int pid in
   List.exists lines (fun line ->
       try
         ignore @@ Str.search_forward re line 0;
-        let pid_s = Str.matched_group 1 line in
-        int_of_string pid_s = pid
-      with Not_found -> false)
+        let pid_s = Str.matched_group 2 line in
+        pid_s = pid
+      with
+      | Not_found -> false)
 
 let check_dmesg_for_oom pid name =
   let dmesg = exec_read_lines ~reverse:true "dmesg" in

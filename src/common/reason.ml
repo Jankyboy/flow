@@ -21,6 +21,17 @@ module Ast = Flow_ast
 open Utils_js
 open String_utils
 
+type name =
+  | OrdinaryName of string
+  | InternalName of string
+  | InternalModuleName of string
+[@@deriving eq, ord, show]
+
+let display_string_of_name = function
+  | OrdinaryName x -> x
+  | InternalName x -> spf ".%s" x
+  | InternalModuleName x -> spf ".$module__%s" x
+
 let mk_id () = Ident.make ""
 
 (* Reasons are included in types mainly for error reporting, but sometimes we
@@ -75,10 +86,12 @@ type 'loc virtual_reason_desc =
   | RExports
   | RNullOrVoid
   | RLongStringLit of int (* Max length *)
-  | RStringLit of string
+  (* TODO String literals should not be able to include internal names *)
+  | RStringLit of name
   | RNumberLit of string
   | RBigIntLit of string
   | RBooleanLit of bool
+  | RIndexedAccess of { optional: bool }
   | RMatchingProp of string * 'loc virtual_reason_desc
   | RObject
   | RObjectLit
@@ -145,10 +158,12 @@ type 'loc virtual_reason_desc =
   | RNoSuper
   | RDummyPrototype
   | RDummyThis
+  | RImplicitThis of 'loc virtual_reason_desc
   | RTupleMap
   | RObjectMap
   | RObjectMapi
-  | RType of string
+  (* TODO type names should not be able to be internal names *)
+  | RType of name
   | RTypeAlias of string * 'loc option (* reliable def loc *) * 'loc virtual_reason_desc
   | ROpaqueType of string
   | RTypeParam of
@@ -159,21 +174,22 @@ type 'loc virtual_reason_desc =
   | RMethodCall of string option
   | RParameter of string option
   | RRestParameter of string option
-  | RIdentifier of string
+  | RIdentifier of name
   | RIdentifierAssignment of string
   | RPropertyAssignment of string option
-  | RProperty of string option
+  | RProperty of name option
   | RPrivateProperty of string
-  | RShadowProperty of string
+  | RShadowProperty of name
   | RMember of {
       object_: string;
       property: string;
     }
-  | RPropertyOf of string * 'loc virtual_reason_desc
-  | RPropertyIsAString of string
-  | RMissingProperty of string option
-  | RUnknownProperty of string option
-  | RUndefinedProperty of string
+  | RPropertyOf of name * 'loc virtual_reason_desc
+  | RPropertyIsAString of name
+  | RMissingProperty of name option
+  | RUnknownProperty of name option
+  | RUnknownUnspecifiedProperty of 'loc virtual_reason_desc
+  | RUndefinedProperty of name
   | RSomeProperty
   | RNameProperty of 'loc virtual_reason_desc
   | RMissingAbstract of 'loc virtual_reason_desc
@@ -188,7 +204,6 @@ type 'loc virtual_reason_desc =
   | RCode of string
   | RCustom of string
   | RPolyType of 'loc virtual_reason_desc
-  | RPolyTest of string * 'loc virtual_reason_desc
   | RExactType of 'loc virtual_reason_desc
   | ROptional of 'loc virtual_reason_desc
   | RMaybe of 'loc virtual_reason_desc
@@ -207,16 +222,18 @@ type 'loc virtual_reason_desc =
   | RPredicateCall of 'loc virtual_reason_desc
   | RPredicateCallNeg of 'loc virtual_reason_desc
   | RRefined of 'loc virtual_reason_desc
+  | RRefinedElement of 'loc virtual_reason_desc
   | RIncompatibleInstantiation of string
   | RSpreadOf of 'loc virtual_reason_desc
   | RShapeOf of 'loc virtual_reason_desc
   | RObjectPatternRestProp
   | RArrayPatternRestProp
   | RCommonJSExports of string
-  | RModule of string
+  | RModule of name
   | ROptionalChain
   | RReactProps
-  | RReactElement of string option
+  (* TODO React element names should not allow internal names *)
+  | RReactElement of name option
   | RReactClass
   | RReactComponent
   | RReactStatics
@@ -228,7 +245,7 @@ type 'loc virtual_reason_desc =
   | RReactChildrenOrUndefinedOrType of 'loc virtual_reason_desc
   | RReactSFC
   | RReactConfig
-  | RPossiblyMissingPropFromObj of string * 'loc virtual_reason_desc
+  | RPossiblyMissingPropFromObj of name * 'loc virtual_reason_desc
   | RWidenedObjProp of 'loc virtual_reason_desc
   | RUnionBranching of 'loc virtual_reason_desc * int
 [@@deriving eq, show]
@@ -253,6 +270,7 @@ let rec map_desc_locs f = function
       ) as r ->
     r
   | RFunctionCall desc -> RFunctionCall (map_desc_locs f desc)
+  | RUnknownUnspecifiedProperty desc -> RUnknownUnspecifiedProperty (map_desc_locs f desc)
   | RUnaryOperator (s, desc) -> RUnaryOperator (s, map_desc_locs f desc)
   | RBinaryOperator (s, d1, d2) -> RBinaryOperator (s, map_desc_locs f d1, map_desc_locs f d2)
   | RLogical (s, d1, d2) -> RLogical (s, map_desc_locs f d1, map_desc_locs f d2)
@@ -268,7 +286,7 @@ let rec map_desc_locs f = function
     | RUndefinedProperty _ | RSomeProperty | RFieldInitializer _ | RUntypedModule _
     | RNamedImportedType _ | RImportStarType _ | RImportStarTypeOf _ | RImportStar _
     | RDefaultImportedType _ | RAsyncImport | RCode _ | RCustom _ | RIncompatibleInstantiation _
-    | ROpaqueType _ | RObjectMapi ) as r ->
+    | ROpaqueType _ | RObjectMapi | RIndexedAccess _ ) as r ->
     r
   | REnumRepresentation desc -> REnumRepresentation (map_desc_locs f desc)
   | RConstructorCall desc -> RConstructorCall (map_desc_locs f desc)
@@ -281,7 +299,6 @@ let rec map_desc_locs f = function
   | RNameProperty desc -> RNameProperty (map_desc_locs f desc)
   | RMissingAbstract desc -> RMissingAbstract (map_desc_locs f desc)
   | RPolyType desc -> RPolyType (map_desc_locs f desc)
-  | RPolyTest (s, desc) -> RPolyTest (s, map_desc_locs f desc)
   | RExactType desc -> RExactType (map_desc_locs f desc)
   | ROptional desc -> ROptional (map_desc_locs f desc)
   | RMaybe desc -> RMaybe (map_desc_locs f desc)
@@ -300,11 +317,13 @@ let rec map_desc_locs f = function
   | RPredicateCall desc -> RPredicateCall (map_desc_locs f desc)
   | RPredicateCallNeg desc -> RPredicateCallNeg (map_desc_locs f desc)
   | RRefined desc -> RRefined (map_desc_locs f desc)
+  | RRefinedElement desc -> RRefinedElement (map_desc_locs f desc)
   | RSpreadOf desc -> RSpreadOf (map_desc_locs f desc)
   | RShapeOf desc -> RShapeOf (map_desc_locs f desc)
   | RMatchingProp (s, desc) -> RMatchingProp (s, map_desc_locs f desc)
   | RTrusted desc -> RTrusted (map_desc_locs f desc)
   | RPrivate desc -> RPrivate (map_desc_locs f desc)
+  | RImplicitThis desc -> RImplicitThis (map_desc_locs f desc)
   | ( RObjectPatternRestProp | RArrayPatternRestProp | RCommonJSExports _ | RModule _
     | ROptionalChain | RReactProps | RReactElement _ | RReactClass | RReactComponent | RReactStatics
     | RReactDefaultProps | RReactState | RReactPropTypes | RReactChildren ) as r ->
@@ -403,8 +422,8 @@ let json_of_loc_props ?(strip_root = None) ?(catch_offset_errors = false) ~offse
     Loc.(
       let offset_entry offset_table pos =
         let offset =
-          try int_ (Offset_utils.offset offset_table pos)
-          with Offset_utils.Offset_lookup_failed _ as exn ->
+          try int_ (Offset_utils.offset offset_table pos) with
+          | Offset_utils.Offset_lookup_failed _ as exn ->
             if catch_offset_errors then
               JSON_Null
             else
@@ -534,11 +553,16 @@ let rec string_of_desc = function
   | RNullOrVoid -> "null or undefined"
   | RSymbol -> "symbol"
   | RExports -> "exports"
-  | RStringLit "" -> "empty string"
-  | RStringLit x -> spf "string literal `%s`" x
+  | RStringLit (OrdinaryName "") -> "empty string"
+  | RStringLit x -> spf "string literal `%s`" (display_string_of_name x)
   | RNumberLit x -> spf "number literal `%s`" x
   | RBigIntLit x -> spf "bigint literal `%s`" x
   | RBooleanLit b -> spf "boolean literal `%s`" (string_of_bool b)
+  | RIndexedAccess { optional } ->
+    if optional then
+      "optional indexed access"
+    else
+      "indexed access"
   | RMatchingProp (k, v) -> spf "object with property `%s` that matches %s" k (string_of_desc v)
   | RObject -> "object"
   | RObjectLit -> "object literal"
@@ -612,17 +636,18 @@ let rec string_of_desc = function
   | RNoSuper -> "empty super object"
   | RDummyPrototype -> "empty prototype object"
   | RDummyThis -> "bound `this` in method"
+  | RImplicitThis desc -> spf "implicit `this` parameter of %s" (string_of_desc desc)
   | RTupleMap -> "`$TupleMap`"
   | RObjectMap -> "`$ObjMap`"
   | RObjectMapi -> "`$ObjMapi`"
-  | RType x -> spf "`%s`" (prettify_react_util x)
+  | RType x -> spf "`%s`" (prettify_react_util (display_string_of_name x))
   | RTypeAlias (x, _, _) -> spf "`%s`" (prettify_react_util x)
   | ROpaqueType x -> spf "`%s`" (prettify_react_util x)
   | RTypeParam (x, _, _) -> spf "`%s`" x
   | RTypeof x -> spf "`typeof %s`" x
   | RMethod (Some x) -> spf "method `%s`" x
   | RMethod None -> "computed method"
-  | RIdentifier x -> spf "`%s`" (prettify_react_util x)
+  | RIdentifier x -> spf "`%s`" (prettify_react_util (display_string_of_name x))
   | RIdentifierAssignment x -> spf "assignment of identifier `%s`" x
   | RMethodCall (Some x) -> spf "call of method `%s`" x
   | RMethodCall None -> "call of computed property"
@@ -630,21 +655,23 @@ let rec string_of_desc = function
   | RParameter None -> "parameter"
   | RRestParameter (Some x) -> spf "rest parameter `%s`" x
   | RRestParameter None -> "rest parameter"
-  | RProperty (Some x) -> spf "property `%s`" x
+  | RProperty (Some x) -> spf "property `%s`" (display_string_of_name x)
   | RProperty None -> "computed property"
   | RPrivateProperty x -> spf "property `#%s`" x
   | RMember { object_; property } -> spf "`%s%s`" object_ property
   | RPropertyAssignment (Some x) -> spf "assignment of property `%s`" x
   | RPropertyAssignment None -> "assignment of computed property/element"
-  | RShadowProperty x -> spf ".%s" x
-  | RPropertyOf (x, d) -> spf "property `%s` of %s" x (string_of_desc d)
-  | RPropertyIsAString "" -> "empty string"
-  | RPropertyIsAString x -> spf "string `%s`" x
-  | RMissingProperty (Some x) -> spf "property `%s` does not exist" x
+  | RShadowProperty x -> spf ".%s" (display_string_of_name x)
+  | RPropertyOf (x, d) -> spf "property `%s` of %s" (display_string_of_name x) (string_of_desc d)
+  | RPropertyIsAString (OrdinaryName "") -> "empty string"
+  | RPropertyIsAString x -> spf "string `%s`" (display_string_of_name x)
+  | RMissingProperty (Some x) -> spf "property `%s` does not exist" (display_string_of_name x)
   | RMissingProperty None -> "computed property does not exist"
-  | RUnknownProperty (Some x) -> spf "property `%s` of unknown type" x
+  | RUnknownProperty (Some x) -> spf "property `%s` of unknown type" (display_string_of_name x)
   | RUnknownProperty None -> "computed property of unknown type"
-  | RUndefinedProperty x -> spf "undefined property `%s`" x
+  | RUnknownUnspecifiedProperty d ->
+    spf "an unknown property that may exist on the inexact %s" (string_of_desc d)
+  | RUndefinedProperty x -> spf "undefined property `%s`" (display_string_of_name x)
   | RSomeProperty -> "some property"
   | RNameProperty d -> spf "property `name` of %s" (string_of_desc d)
   | RMissingAbstract d -> spf "undefined. Did you forget to declare %s?" (string_of_desc d)
@@ -660,7 +687,6 @@ let rec string_of_desc = function
   | RCustom x -> x
   | RPolyType (RClass d) -> string_of_desc d
   | RPolyType d -> string_of_desc d
-  | RPolyTest (_, d) -> string_of_desc d
   | RExactType d -> string_of_desc d
   | ROptional d -> spf "optional %s" (string_of_desc d)
   | RMaybe d ->
@@ -684,18 +710,19 @@ let rec string_of_desc = function
   | RPredicateCall d -> spf "predicate call to %s" (string_of_desc d)
   | RPredicateCallNeg d -> spf "negation of predicate call to %s" (string_of_desc d)
   | RRefined d -> spf "refined %s" (string_of_desc d)
+  | RRefinedElement d -> spf "array element of refined %s" (string_of_desc d)
   | RIncompatibleInstantiation x -> spf "`%s`" x
   | RSpreadOf d -> spf "spread of %s" (string_of_desc d)
   | RShapeOf d -> spf "%s" (string_of_desc d)
   | RObjectPatternRestProp -> "rest of object pattern"
   | RArrayPatternRestProp -> "rest of array pattern"
   | RCommonJSExports x -> spf "module `%s`" x
-  | RModule x -> spf "module `%s`" x
+  | RModule x -> spf "module `%s`" (display_string_of_name x)
   | ROptionalChain -> "optional chain"
   | RReactProps -> "props"
   | RReactElement x ->
     (match x with
-    | Some x -> spf "`%s` element" x
+    | Some x -> spf "`%s` element" (display_string_of_name x)
     | None -> "React element")
   | RReactClass -> "React class"
   | RReactComponent -> "React component"
@@ -709,7 +736,10 @@ let rec string_of_desc = function
   | RReactSFC -> "React stateless functional component"
   | RReactConfig -> "config of React component"
   | RPossiblyMissingPropFromObj (propname, desc) ->
-    spf "possibly missing property `%s` in %s" propname (string_of_desc desc)
+    spf
+      "possibly missing property `%s` in %s"
+      (display_string_of_name propname)
+      (string_of_desc desc)
   | RWidenedObjProp desc -> string_of_desc desc
   | RUnionBranching (desc, _) -> string_of_desc desc
 
@@ -737,8 +767,7 @@ let dump_reason ?(strip_root = None) r =
 let desc_of_reason =
   let rec loop = function
     | RTypeAlias (_, _, desc)
-    | RUnionBranching (desc, _)
-    | RPolyTest (_, desc) ->
+    | RUnionBranching (desc, _) ->
       loop desc
     | desc -> desc
   in
@@ -748,19 +777,35 @@ let desc_of_reason =
     else
       loop r.desc
 
-let internal_name name = spf ".%s" name
+let internal_name name = InternalName name
 
-let is_internal_name name = String.length name >= 1 && name.[0] = '.'
-
-let internal_module_name name = spf ".$module__%s" name
-
-let is_internal_module_name name = string_starts_with name ".$module__"
-
-let uninternal_module_name name =
-  if is_internal_module_name name then
-    String.sub name 10 (String.length name - 10)
-  else
+let internal_name_of_name name =
+  match name with
+  | OrdinaryName str -> internal_name str
+  | InternalName _
+  | InternalModuleName _ ->
+    (* Already internal *)
     name
+
+let is_internal_name = function
+  | OrdinaryName _ -> false
+  | InternalName _
+  | InternalModuleName _ ->
+    true
+
+let internal_module_name name = InternalModuleName name
+
+let is_internal_module_name = function
+  | OrdinaryName _
+  | InternalName _ ->
+    false
+  | InternalModuleName _ -> true
+
+let uninternal_name = function
+  | OrdinaryName x
+  | InternalName x
+  | InternalModuleName x ->
+    x
 
 (* Instantiable reasons identify tvars that are created for the purpose of
    instantiation: they are fresh rather than shared, and should become types
@@ -791,8 +836,18 @@ let is_instantiable_reason r =
    Then the types of Tags.ACTION_FOO and Tags.ACTION_BAR are assumed to be 0->1.
 *)
 let is_constant_reason r =
+  (* TODO consider avoiding the use of display_string_of_name here. For now, leaving as-is to
+   * prevent a behavior change. *)
+  let helper x =
+    let len = String.length x in
+    if len = 0 then
+      false
+    else
+      is_not_lowercase x 0 (len - 1)
+  in
   match desc_of_reason r with
   | RIdentifier x ->
+    let x = display_string_of_name x in
     (* A single-letter variable name which happens to be upper-case should not
        be confused with a constant reason. This should really be further
        restricted to `const`-declared identifiers in scope. Or, better yet,
@@ -803,15 +858,12 @@ let is_constant_reason r =
     else
       is_not_lowercase x 0 (len - 1)
   | RProperty (Some x)
-  | RPrivateProperty x
-  | RMember { object_ = _; property = x }
   | RPropertyOf (x, _)
   | RPropertyIsAString x ->
-    let len = String.length x in
-    if len = 0 then
-      false
-    else
-      is_not_lowercase x 0 (len - 1)
+    helper (display_string_of_name x)
+  | RPrivateProperty x
+  | RMember { object_ = _; property = x } ->
+    helper x
   | _ -> false
 
 let is_typemap_reason r =
@@ -993,11 +1045,11 @@ let rec code_desc_of_expression ~wrap (_, x) =
       | _ -> false
     in
     do_wrap
-      ( code_desc_of_expression ~wrap:wrap_test test
+      (code_desc_of_expression ~wrap:wrap_test test
       ^ " ? "
       ^ code_desc_of_expression ~wrap:false consequent
       ^ " : "
-      ^ code_desc_of_expression ~wrap:false alternate )
+      ^ code_desc_of_expression ~wrap:false alternate)
   | Function _ -> "function () { ... }"
   | Identifier (_, { Ast.Identifier.name = x; comments = _ }) -> x
   | Import { Import.argument; comments = _ } ->
@@ -1047,10 +1099,10 @@ let rec code_desc_of_expression ~wrap (_, x) =
       | (_loc, { ArgList.arguments = _; comments = _ }) -> "(...)"
     in
     code_desc_of_expression ~wrap:true callee
-    ^ ( if optional then
+    ^ (if optional then
         "?."
       else
-        "" )
+        "")
     ^ targ_string
     ^ arg_string
   | OptionalMember { OptionalMember.member = { Member._object; property; comments = _ }; optional }
@@ -1089,10 +1141,10 @@ let rec code_desc_of_expression ~wrap (_, x) =
         | Decrement -> "--")
     in
     do_wrap
-      ( if prefix then
+      (if prefix then
         op ^ x
       else
-        x ^ op )
+        x ^ op)
   | Yield { Yield.argument = Some x; delegate = false; _ } ->
     do_wrap ("yield " ^ code_desc_of_expression ~wrap:false x)
   | Yield { Yield.argument = Some x; delegate = true; _ } ->
@@ -1180,7 +1232,7 @@ and code_desc_of_operation =
 
 and code_desc_of_jsx_element x =
   let open Ast.JSX in
-  match (snd x.openingElement).Opening.name with
+  match (snd x.opening_element).Opening.name with
   | Identifier (_, { Identifier.name; comments = _ }) -> "<" ^ name ^ " />"
   | NamespacedName
       ( _,
@@ -1216,23 +1268,23 @@ and code_desc_of_literal x =
 and code_desc_of_property ~optional property =
   match property with
   | Ast.Expression.Member.PropertyIdentifier (_, { Ast.Identifier.name = x; comments = _ }) ->
-    ( if optional then
+    (if optional then
       "?."
     else
-      "." )
+      ".")
     ^ x
   | Ast.Expression.Member.PropertyPrivateName
       (_, { Ast.PrivateName.id = (_, { Ast.Identifier.name = x; comments = _ }); comments = _ }) ->
-    ( if optional then
+    (if optional then
       "?.#"
     else
-      ".#" )
+      ".#")
     ^ x
   | Ast.Expression.Member.PropertyExpression x ->
-    ( if optional then
+    (if optional then
       "?.["
     else
-      "[" )
+      "[")
     ^ code_desc_of_expression ~wrap:false x
     ^ "]"
 
@@ -1245,7 +1297,7 @@ let rec mk_expression_reason =
   | (loc, ArrowFunction { Ast.Function.async; _ }) -> func_reason ~async ~generator:false loc
   | (loc, Function { Ast.Function.async; generator; _ }) -> func_reason ~async ~generator loc
   | (loc, Ast.Expression.Literal { Ast.Literal.value = Ast.Literal.String ""; _ }) ->
-    mk_reason (RStringLit "") loc
+    mk_reason (RStringLit (OrdinaryName "")) loc
   | (loc, TaggedTemplate _) -> mk_reason RTemplateString loc
   | (loc, TemplateLiteral _) -> mk_reason RTemplateString loc
   | (loc, Member { Member._object; property; comments = _ }) ->
@@ -1318,6 +1370,7 @@ let classification_of_reason r =
   | REmpty
   | RAnyExplicit
   | RAnyImplicit
+  | RIndexedAccess _
   | RMatchingProp _
   | RObject
   | RObjectLit
@@ -1369,6 +1422,7 @@ let classification_of_reason r =
   | RNoSuper
   | RDummyPrototype
   | RDummyThis
+  | RImplicitThis _
   | RTupleMap
   | RObjectMap
   | RObjectMapi
@@ -1392,6 +1446,7 @@ let classification_of_reason r =
   | RPropertyIsAString _
   | RMissingProperty _
   | RUnknownProperty _
+  | RUnknownUnspecifiedProperty _
   | RUndefinedProperty _
   | RSomeProperty
   | RNameProperty _
@@ -1408,7 +1463,6 @@ let classification_of_reason r =
   | RCustom _
   | RExports
   | RPolyType _
-  | RPolyTest _
   | RExactType _
   | ROptional _
   | RMaybe _
@@ -1426,6 +1480,7 @@ let classification_of_reason r =
   | RPredicateCall _
   | RPredicateCallNeg _
   | RRefined _
+  | RRefinedElement _
   | RIncompatibleInstantiation _
   | RSpreadOf _
   | RShapeOf _
